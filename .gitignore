@@ -1,0 +1,7 @@
+/target/
+/.upstream-agent/
+/native-artifacts/
+/.env
+*.so
+*.key
+*.pem

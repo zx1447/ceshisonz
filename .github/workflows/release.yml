@@ -1,0 +1,151 @@
+name: Build and publish ceshisonz
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ceshisonz-release-main
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: Build and check Nezha ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout plugin source
+        uses: actions/checkout@v4
+      - name: Checkout pinned Nezha Agent source
+        uses: actions/checkout@v4
+        with:
+          repository: nezhahq/agent
+          ref: 84e61fca84661503d324ae6ab00ca88e280e00a2
+          path: .upstream-agent
+      - name: Set up Go from upstream module
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .upstream-agent/go.mod
+          cache-dependency-path: .upstream-agent/go.sum
+      - name: Build the shared library
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '1'
+        run: |
+          set -euo pipefail
+          cp native/main.go .upstream-agent/cmd/agent/main.go
+          cp native/embedded.go .upstream-agent/cmd/agent/embedded.go
+          mkdir -p native-artifacts
+          cd .upstream-agent
+          go build -buildmode=c-shared \
+            -ldflags '-X github.com/nezhahq/agent/pkg/monitor.Version=2.3.0' \
+            -o "../native-artifacts/nezha_agent_linux_${GOARCH}.so" ./cmd/agent/
+          cd ..
+          file "native-artifacts/nezha_agent_linux_${GOARCH}.so"
+          nm -D --defined-only "native-artifacts/nezha_agent_linux_${GOARCH}.so" | grep -E ' (StartNezha|StopNezha)$'
+      - name: Check start and stop with dummy data
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          tmp="$RUNNER_TEMP/ceshisonz-private-smoke"
+          mkdir -p "$tmp"
+          chmod 700 "$tmp"
+          TMPDIR="$tmp" timeout 90s python3 ci/smoke_native.py "native-artifacts/nezha_agent_linux_${ARCH}.so"
+          if grep -R -l -F 'ci-dummy-not-a-real-secret' "$tmp"; then
+            echo '::error::Dummy secret was written under TMPDIR'
+            exit 1
+          fi
+      - name: Upload checked library
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.arch }}
+          path: native-artifacts/nezha_agent_linux_${{ matrix.arch }}.so
+          if-no-files-found: error
+          retention-days: 7
+
+  package-and-release:
+    name: Build plugin and publish Release
+    needs: native
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout plugin source
+        uses: actions/checkout@v4
+      - name: Download both checked libraries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-artifacts
+          merge-multiple: true
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Bind library URLs and SHA-256 values to this build
+        run: |
+          set -euo pipefail
+          tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          props=src/main/resources/nezha-libraries.properties
+          : > "$props"
+          for arch in amd64 arm64; do
+            file="native-artifacts/nezha_agent_linux_${arch}.so"
+            test -s "$file"
+            sha=$(sha256sum "$file" | cut -d' ' -f1)
+            printf 'linux.%s.url=https://github.com/%s/releases/download/%s/%s\n' \
+              "$arch" "$GITHUB_REPOSITORY" "$tag" "$(basename "$file")" >> "$props"
+            printf 'linux.%s.sha256=%s\n' "$arch" "$sha" >> "$props"
+          done
+      - name: Compile and package plugin
+        run: mvn -B -ntp clean package
+      - name: Verify plugin and JNA integration
+        run: |
+          set -euo pipefail
+          jar="$GITHUB_WORKSPACE/target/EssentialsX-1.21.11.jar"
+          python3 ci/verify_plugin.py "$jar" native-artifacts
+          javac -cp "$jar" -d "$RUNNER_TEMP" ci/NativeSmoke.java
+          timeout 60s java -cp "$jar:$RUNNER_TEMP" NativeSmoke \
+            "$GITHUB_WORKSPACE/native-artifacts/nezha_agent_linux_amd64.so"
+      - name: Upload plugin build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ceshisonz-plugin
+          path: target/EssentialsX-1.21.11.jar
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish a new release without deleting earlier releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo '::error::main changed during this build; refusing to publish a stale release'
+            exit 1
+          fi
+          mkdir -p release-files
+          cp target/EssentialsX-1.21.11.jar release-files/
+          cp native-artifacts/nezha_agent_linux_amd64.so native-artifacts/nezha_agent_linux_arm64.so release-files/
+          (cd release-files && sha256sum EssentialsX-1.21.11.jar nezha_agent_linux_amd64.so nezha_agent_linux_arm64.so > SHA256SUMS)
+          gh release create "$RELEASE_TAG" release-files/* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "ceshisonz — Nezha and fake players" \
+            --notes 'Configured Nezha monitoring runs in the server JVM. No Node or CF deployment. Review the README before installing.' \
+            --latest
+          echo "Published $RELEASE_TAG for $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
