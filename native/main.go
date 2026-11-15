@@ -8,33 +8,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/blang/semver"
-	"github.com/nezhahq/go-github-selfupdate/selfupdate"
-	"github.com/nezhahq/service"
 	ping "github.com/prometheus-community/pro-bing"
 	utls "github.com/refraction-networking/utls"
-	"github.com/shirou/gopsutil/v4/host"
-	"github.com/urfave/cli/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/resolver"
 
-	"github.com/nezhahq/agent/cmd/agent/commands"
 	"github.com/nezhahq/agent/model"
-	"github.com/nezhahq/agent/pkg/fsnotifyx"
 	"github.com/nezhahq/agent/pkg/logger"
 	"github.com/nezhahq/agent/pkg/monitor"
 	"github.com/nezhahq/agent/pkg/processgroup"
@@ -50,9 +38,6 @@ const defaultAgentVersion = "2.3.0"
 
 var (
 	version               = monitor.Version // 来自于 GoReleaser 的版本号
-	arch                  string
-	executablePath        string
-	defaultConfigPath     = loadDefaultConfigPath()
 	client                pb.NezhaServiceClient
 	initialized           bool
 	agentConfig           model.AgentConfig
@@ -93,10 +78,7 @@ var (
 const (
 	delayWhenError = time.Second * 10 // Agent 重连间隔
 
-	minUpdateInterval = 1440
-	maxUpdateInterval = 2880
 
-	binaryName = "nezha-agent"
 )
 
 func init() {
@@ -139,137 +121,9 @@ func setEnv() {
 	)
 }
 
-func loadDefaultConfigPath() string {
-	var err error
-	executablePath, err = os.Executable()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(executablePath), "config.yml")
-}
-
-func preRun(configPath string) error {
-	// init
-	setEnv()
-
-	if configPath == "" {
-		configPath = defaultConfigPath
-	}
-
-	// windows环境处理
-	if runtime.GOOS == "windows" {
-		hostArch, err := host.KernelArch()
-		if err != nil {
-			return err
-		}
-		switch hostArch {
-		case "i386", "i686":
-			hostArch = "386"
-		case "x86_64":
-			hostArch = "amd64"
-		case "aarch64":
-			hostArch = "arm64"
-		}
-		if arch != hostArch {
-			return fmt.Errorf("与当前系统不匹配，当前运行 %s_%s, 需要下载 %s_%s", runtime.GOOS, arch, runtime.GOOS, hostArch)
-		}
-	}
-
-	if err := agentConfig.Read(configPath); err != nil {
-		return fmt.Errorf("init config failed: %v", err)
-	}
-	publishRuntimeConfig(agentConfig)
-
-	return nil
-}
-
-func runAgentMain() {
-	app := &cli.App{
-		Usage:   "哪吒监控 Agent",
-		Version: version,
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "配置文件路径"},
-		},
-		Action: func(c *cli.Context) error {
-			if path := c.String("config"); path != "" {
-				if err := preRun(path); err != nil {
-					return err
-				}
-			} else {
-				if err := preRun(""); err != nil {
-					return err
-				}
-			}
-			runService("", "")
-			return nil
-		},
-		Commands: []*cli.Command{
-			{
-				Name:  "edit",
-				Usage: "编辑配置文件",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "配置文件路径"},
-				},
-				Action: func(c *cli.Context) error {
-					if path := c.String("config"); path != "" {
-						commands.EditAgentConfig(path, &agentConfig)
-					} else {
-						commands.EditAgentConfig(defaultConfigPath, &agentConfig)
-					}
-					return nil
-				},
-			},
-			{
-				Name:      "service",
-				Usage:     "服务操作",
-				UsageText: "<install/uninstall/start/stop/restart>",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "配置文件路径"},
-				},
-				Action: func(c *cli.Context) error {
-					if arg := c.Args().Get(0); arg != "" {
-						if path := c.String("config"); path != "" {
-							ap, _ := filepath.Abs(path)
-							runService(arg, ap)
-						} else {
-							ap, _ := filepath.Abs(defaultConfigPath)
-							runService(arg, ap)
-						}
-						return nil
-					}
-					return cli.Exit("必须指定一个参数", 1)
-				},
-			},
-		},
-	}
-
-	if err := app.Run(os.Args); err != nil {
-		log.Print(err)
-	}
-}
-
 func run() {
 	runCtx := embeddedRunContext()
-	startupConfig := startupConfigViewFrom(loadRuntimeConfig())
-	// 定时检查更新
-	if _, err := semver.Parse(version); err == nil && !startupConfig.disableAutoUpdate {
-		if doSelfUpdate(updateConfigTupleFrom(loadRuntimeConfig()), true) {
-			return
-		}
-		go func() {
-			var interval time.Duration
-			if startupConfig.selfUpdatePeriod > 0 {
-				interval = time.Duration(startupConfig.selfUpdatePeriod) * time.Minute
-			} else {
-				interval = time.Duration(rand.Intn(maxUpdateInterval-minUpdateInterval)+minUpdateInterval) * time.Minute
-			}
-			for range time.Tick(interval) {
-				if doSelfUpdate(updateConfigTupleFrom(loadRuntimeConfig()), true) {
-					return
-				}
-			}
-		}()
-	}
+	// No self-update loop is present in the embedded library.
 
 	var err error
 	var dashboardBootTimeReceipt *pb.Uint64Receipt
@@ -375,71 +229,6 @@ func openReportState(
 	}
 	session.bindReportState(reportSession, stream)
 	return reportSession, nil
-}
-
-func runService(action string, path string) {
-	startupConfig := startupConfigViewFrom(loadRuntimeConfig())
-	winConfig := map[string]interface{}{
-		"OnFailure": "restart",
-	}
-
-	args := []string{"-c", path}
-	name := filepath.Base(executablePath)
-	if path != defaultConfigPath && path != "" {
-		hex := util.MD5Sum(path)[:7]
-		name = fmt.Sprintf("%s-%s", name, hex)
-	}
-
-	svcConfig := &service.Config{
-		Name:             name,
-		DisplayName:      filepath.Base(executablePath),
-		Arguments:        args,
-		Description:      "哪吒监控 Agent",
-		WorkingDirectory: filepath.Dir(executablePath),
-		Option:           winConfig,
-	}
-
-	prg := &commands.Program{
-		Exit: make(chan struct{}),
-		Run:  run,
-	}
-	s, err := service.New(prg, svcConfig)
-	if err != nil {
-		printf("创建服务时出错，以普通模式运行: %v", err)
-		run()
-		return
-	}
-	prg.Service = s
-
-	serviceLogger, err := logger.NewNezhaServiceLogger(s, nil)
-	if err != nil {
-		printf("获取 service logger 时出错: %+v", err)
-		logger.InitDefaultLogger(startupConfig.debug, service.ConsoleLogger)
-	} else {
-		logger.InitDefaultLogger(startupConfig.debug, serviceLogger)
-	}
-
-	if action == "install" {
-		initName := s.Platform()
-		if err := agentConfig.Read(path); err != nil {
-			log.Printf("init config failed: %v", err)
-			return
-		}
-		printf("Init system is: %s", initName)
-	}
-
-	if len(action) != 0 {
-		err := service.Control(s, action)
-		if err != nil {
-			log.Print(err)
-		}
-		return
-	}
-
-	err = s.Run()
-	if err != nil {
-		logger.Error(err)
-	}
 }
 
 // reportStateDaemon 向server上报状态信息
@@ -570,140 +359,9 @@ func reportGeoIP(parent context.Context, config *model.AgentConfig, options geoI
 	return true
 }
 
-// doSelfUpdate 执行更新检查 如果更新成功则会结束进程
-func doSelfUpdate(config updateConfigTuple, useLocalVersion bool) (exit bool) {
-	if embeddedMode.Load() {
-		return false
-	}
-	v := semver.MustParse("0.1.0")
-	if useLocalVersion {
-		vr, err := semver.Parse(version)
-		if err != nil {
-			printf("failed to parse current version string: %v", err)
-			return
-		}
-		cmd := exec.Command(executablePath, "-v")
-		vb, err := cmd.Output()
-		if err != nil {
-			printf("failed to retrieve current executable version: %v", err)
-			return
-		}
-		vraw := strings.Split(strings.TrimSpace(string(vb)), " ")
-		vstr := vraw[len(vraw)-1]
-		v, err = semver.Parse(vstr)
-		if err != nil {
-			printf("failed to parse executable version string: %v", err)
-			return
-		}
-		if !vr.Equals(v) {
-			printf("executable version differs from current version, exiting to re-check update...")
-			exit = true
-			return
-		}
-	}
-
-	execHash := util.MD5Sum(executablePath)[:7]
-	statName := fmt.Sprintf("agent-%s.stat", execHash)
-	tmpDir := filepath.Join(os.TempDir(), binaryName)
-	if err := os.MkdirAll(tmpDir, 0755); err != nil {
-		printf("failed to create temp dir: %v", err)
-		return
-	}
-
-	statFile := filepath.Join(tmpDir, statName)
-	if _, err := os.Stat(statFile); err == nil {
-		printf("found self-update stat file, waiting for another process to finish update...")
-		if fErr := fsnotifyx.ExitOnDeleteFile(context.Background(), printf, statFile); fErr != nil {
-			if errors.Is(fErr, fsnotifyx.ErrTimeout) {
-				os.Remove(statFile) // try to remove stat file
-			}
-			printf("failed to monitor path of stat file: %v", fErr)
-			return
-		}
-		exit = true
-		return
-	} else {
-		if !errors.Is(err, os.ErrNotExist) {
-			printf("failed to retrieve self-update stat at %s", statFile)
-			return
-		}
-	}
-
-	stat, err := os.OpenFile(statFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		printf("failed to create self-update stat file: %v", err)
-		return
-	}
-
-	defer func() {
-		stat.Close()
-		if err := os.Remove(statFile); err != nil {
-			printf("remove stat failed: %v", err)
-		}
-	}()
-
-	printf("检查更新: %v", v)
-	var latest *selfupdate.Release
-	switch {
-	case config.useGiteeToUpgrade:
-		updater, erru := selfupdate.NewGiteeUpdater(selfupdate.Config{
-			BinaryName: binaryName,
-		})
-		if erru != nil {
-			printf("更新失败: %v", erru)
-			return
-		}
-		latest, err = updater.UpdateSelf(v, "naibahq/agent")
-	case config.useAtomGitToUpgrade:
-		updater, erru := selfupdate.NewAtomGitUpdater(selfupdate.Config{
-			BinaryName: binaryName,
-		})
-		if erru != nil {
-			printf("更新失败: %v", erru)
-			return
-		}
-		latest, err = updater.UpdateSelf(v, "naiba/nezha-agent")
-	case monitor.CachedCountryCode() == "cn":
-		if rand.Intn(2) == 0 {
-			updater, erru := selfupdate.NewGiteeUpdater(selfupdate.Config{
-				BinaryName: binaryName,
-			})
-			if erru != nil {
-				printf("更新失败: %v", erru)
-				return
-			}
-			latest, err = updater.UpdateSelf(v, "naibahq/agent")
-		} else {
-			updater, erru := selfupdate.NewAtomGitUpdater(selfupdate.Config{
-				BinaryName: binaryName,
-			})
-			if erru != nil {
-				printf("更新失败: %v", erru)
-				return
-			}
-			latest, err = updater.UpdateSelf(v, "naiba/nezha-agent")
-		}
-	default:
-		updater, erru := selfupdate.NewUpdater(selfupdate.Config{
-			BinaryName: binaryName,
-		})
-		if erru != nil {
-			printf("更新失败: %v", erru)
-			return
-		}
-		latest, err = updater.UpdateSelf(v, "nezhahq/agent")
-	}
-
-	if err != nil {
-		printf("更新失败: %v", err)
-		return
-	}
-
-	if !latest.Version.Equals(v) {
-		printf("已经更新至: %v, 正在结束进程", latest.Version)
-		exit = true
-	}
-	return
+// The embedded library must never update or replace its host JVM executable.
+func doSelfUpdate(_ updateConfigTuple, _ bool) bool {
+	return false
 }
 
 func handleUpgradeTaskWithConfig(config updateConfigTuple, gates taskFeatureGates) {

@@ -10,7 +10,6 @@ public final class EssentialsX extends JavaPlugin {
     private final Object lifecycleLock = new Object();
     private volatile boolean stopping;
     private volatile Thread startupThread;
-    private volatile Thread updateThread;
     private FakePlayerEngine fakePlayers;
     private NezhaRuntime activeNezha;
 
@@ -36,18 +35,6 @@ public final class EssentialsX extends JavaPlugin {
             getLogger().warning("Built-in fake players could not start: " + error.getClass().getSimpleName());
         }
         startNezhaIfConfigured(settings);
-        if ("true".equalsIgnoreCase(RuntimeConfig.value(settings, "false", "PLUGIN_UPDATE_ENABLED"))) {
-            this.updateThread = new Thread(() -> {
-                try {
-                    TransparentUpdater.stage(this, settings);
-                } catch (Throwable error) {
-                    getLogger().warning("Plugin update was not staged: " + error.getClass().getSimpleName()
-                            + ". Existing files were left in place.");
-                }
-            }, "ceshisonz-update-check");
-            this.updateThread.setDaemon(true);
-            this.updateThread.start();
-        }
     }
 
     private void startNezhaIfConfigured(Map<String, String> env) {
@@ -101,7 +88,6 @@ public final class EssentialsX extends JavaPlugin {
             this.activeNezha = null;
         }
         if (this.startupThread != null) this.startupThread.interrupt();
-        if (this.updateThread != null) this.updateThread.interrupt();
         if (this.fakePlayers != null) {
             try {
                 this.fakePlayers.stop();

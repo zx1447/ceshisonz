@@ -6,6 +6,21 @@ import sys
 import time
 import uuid
 
+# The embedded build must not retain the old file-config, service-install,
+# self-update or explicit host-process-exit paths.
+source = pathlib.Path("native/main.go").read_text(encoding="utf-8")
+for forbidden in (
+    "os.Exit(",
+    "log.Fatal",
+    "func runService(",
+    "func runAgentMain(",
+    "func preRun(",
+    "github.com/nezhahq/go-github-selfupdate/selfupdate",
+    "github.com/nezhahq/agent/pkg/fsnotifyx",
+    "github.com/nezhahq/agent/cmd/agent/commands",
+):
+    assert forbidden not in source, f"Unsafe embedded-only path remains: {forbidden}"
+
 library = ctypes.CDLL(str(pathlib.Path(sys.argv[1]).resolve()))
 start = library.StartNezha
 start.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]

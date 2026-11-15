@@ -9,17 +9,12 @@ import (
 	"context"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nezhahq/agent/model"
 	"github.com/nezhahq/agent/pkg/logger"
 	"github.com/nezhahq/service"
 )
-
-// embeddedMode prevents the Nezha self-updater from replacing or exiting the
-// host JVM. The library remains loaded for the lifetime of the JVM.
-var embeddedMode atomic.Bool
 
 var embeddedState struct {
 	sync.Mutex
@@ -86,7 +81,6 @@ func StartNezha(address, secret *C.char, tls C.int, uuid *C.char, allowCommands 
 		return 2
 	}
 
-	embeddedMode.Store(true)
 	agentConfig = config
 	publishRuntimeConfig(config)
 	setEnv()
