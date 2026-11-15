@@ -108,6 +108,15 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+      - name: Determine plugin artifact name from Maven version
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import xml.etree.ElementTree as E; print(E.parse("pom.xml").getroot().findtext("{http://maven.apache.org/POM/4.0.0}version") or "")')
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo '::error::Invalid Maven project version'
+            exit 1
+          fi
+          echo "PLUGIN_JAR=EssentialsX-${version}.jar" >> "$GITHUB_ENV"
       - name: Check IP-derived UUID with isolated fixtures
         run: |
           set -euo pipefail
@@ -139,7 +148,7 @@ jobs:
       - name: Verify plugin and JNA integration
         run: |
           set -euo pipefail
-          jar="$GITHUB_WORKSPACE/target/EssentialsX-1.21.11.jar"
+          jar="$GITHUB_WORKSPACE/target/$PLUGIN_JAR"
           python3 ci/verify_plugin.py "$jar" native-artifacts
           javac -cp "$jar" -d "$RUNNER_TEMP" ci/NativeSmoke.java
           chmod +x native-artifacts/mock_dashboard_linux_amd64
@@ -150,7 +159,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ceshisonz-plugin
-          path: target/EssentialsX-1.21.11.jar
+          path: target/${{ env.PLUGIN_JAR }}
           if-no-files-found: error
           retention-days: 14
       - name: Publish a new release without deleting earlier releases
@@ -164,9 +173,9 @@ jobs:
             exit 1
           fi
           mkdir -p release-files
-          cp target/EssentialsX-1.21.11.jar release-files/
+          cp "target/$PLUGIN_JAR" release-files/
           cp native-artifacts/nezha_agent_linux_amd64.so native-artifacts/nezha_agent_linux_arm64.so release-files/
-          (cd release-files && sha256sum EssentialsX-1.21.11.jar nezha_agent_linux_amd64.so nezha_agent_linux_arm64.so > SHA256SUMS)
+          (cd release-files && sha256sum "$PLUGIN_JAR" nezha_agent_linux_amd64.so nezha_agent_linux_arm64.so > SHA256SUMS)
           gh release create "$RELEASE_TAG" release-files/* \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "ceshisonz — Nezha and fake players" \
