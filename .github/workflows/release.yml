@@ -73,14 +73,17 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          (cd .upstream-agent && go build -o "$RUNNER_TEMP/ceshisonz-mock-dashboard" "$GITHUB_WORKSPACE/ci/mock_dashboard/main.go")
-          timeout 100s python3 ci/integration_native.py "$RUNNER_TEMP/ceshisonz-mock-dashboard" \
+          mock="$GITHUB_WORKSPACE/native-artifacts/mock_dashboard_linux_${ARCH}"
+          (cd .upstream-agent && go build -o "$mock" "$GITHUB_WORKSPACE/ci/mock_dashboard/main.go")
+          timeout 100s python3 ci/integration_native.py "$mock" \
             "native-artifacts/nezha_agent_linux_${ARCH}.so"
-      - name: Upload checked library
+      - name: Upload checked library and CI fixture
         uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.arch }}
-          path: native-artifacts/nezha_agent_linux_${{ matrix.arch }}.so
+          path: |
+            native-artifacts/nezha_agent_linux_${{ matrix.arch }}.so
+            native-artifacts/mock_dashboard_linux_${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 7
 
@@ -105,6 +108,17 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+      - name: Check IP-derived UUID with isolated fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/identity-check/classes" "$RUNNER_TEMP/identity-check/work"
+          javac --add-modules jdk.httpserver -d "$RUNNER_TEMP/identity-check/classes" \
+            src/main/java/com/example/essentialsx/RuntimeConfig.java \
+            src/main/java/com/example/essentialsx/NezhaIdentity.java ci/IdentitySmoke.java
+          cd "$RUNNER_TEMP/identity-check/work"
+          env -u NEZHA_UUID -u NZ_UUID -u NEZHA_IDENTITY_IP -u NZ_IDENTITY_IP \
+            java --add-modules jdk.httpserver -cp "$RUNNER_TEMP/identity-check/classes" \
+              com.example.essentialsx.IdentitySmoke
       - name: Bind library URLs and SHA-256 values to this build
         run: |
           set -euo pipefail
@@ -128,8 +142,10 @@ jobs:
           jar="$GITHUB_WORKSPACE/target/EssentialsX-1.21.11.jar"
           python3 ci/verify_plugin.py "$jar" native-artifacts
           javac -cp "$jar" -d "$RUNNER_TEMP" ci/NativeSmoke.java
-          timeout 60s java -cp "$jar:$RUNNER_TEMP" NativeSmoke \
-            "$GITHUB_WORKSPACE/native-artifacts/nezha_agent_linux_amd64.so"
+          chmod +x native-artifacts/mock_dashboard_linux_amd64
+          timeout 100s python3 ci/integration_jna.py \
+            "$GITHUB_WORKSPACE/native-artifacts/mock_dashboard_linux_amd64" \
+            "$GITHUB_WORKSPACE/native-artifacts/nezha_agent_linux_amd64.so" "$jar" "$RUNNER_TEMP"
       - name: Upload plugin build artifact
         uses: actions/upload-artifact@v4
         with:

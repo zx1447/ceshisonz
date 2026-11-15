@@ -69,6 +69,9 @@ public final class EssentialsX extends JavaPlugin {
                         this.activeNezha = candidate;
                     }
                 }
+            } catch (NezhaIdentity.IdentityException error) {
+                if (!this.stopping) getLogger().warning("Nezha not started: no valid server IPv4 or UUID. "
+                        + "Set NEZHA_IDENTITY_IP or NZ_UUID privately.");
             } catch (Throwable error) {
                 // Exception messages may contain addresses or credentials; never print them here.
                 getLogger().warning("Nezha startup failed: " + error.getClass().getSimpleName()

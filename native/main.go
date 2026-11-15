@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -786,41 +784,6 @@ func ioStreamKeepAlive(ctx context.Context, stream pb.NezhaService_IOStreamClien
 }
 
 
-// generateIPUUID 基于 IP 生成固定 UUID (MD5, 跟 index.js generateUUID 一致)
-// 格式: hash[0:8]-[8:12]-[12:16]-[16:20]-[20:32]
-func generateIPUUID(ip string) string {
-	h := md5.Sum([]byte(ip))
-	hex := fmt.Sprintf("%x", h)
-	return fmt.Sprintf("%s-%s-%s-%s-%s",
-		hex[0:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32])
-}
-
-// getPublicIP 获取公网 IP (多源 fallback)
-func getPublicIP() string {
-	urls := []string{
-		"https://api.ipify.org",
-		"https://ifconfig.me/ip",
-		"https://ipinfo.io/ip",
-	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	for _, u := range urls {
-		resp, err := client.Get(u)
-		if err != nil {
-			continue
-		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			continue
-		}
-		ip := strings.TrimSpace(string(body))
-		// 简单验证是 IPv4
-		if matched, _ := regexp.MatchString(`^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$`, ip); matched {
-			return ip
-		}
-	}
-	return ""
-}
-
-// The embedded entry points are in embedded.go.
+// The embedded entry points are in embedded.go. UUID selection belongs to
+// the Java caller so both native architectures receive the same identity.
 func main() {}

@@ -16,7 +16,8 @@ import (
 )
 
 const dummySecret = "ci-dummy-not-a-real-secret"
-const dummyUUID = "123e4567-e89b-12d3-a456-426614174000"
+// Known IP-based UUID for the documentation address 198.51.100.42.
+const dummyUUID = "38ee6b9d-8ed7-4593-8fe0-1e362327b8ef"
 
 type fakeDashboard struct {
 	pb.UnimplementedNezhaServiceServer

@@ -8,7 +8,8 @@ import sys
 import threading
 import time
 
-DUMMY_UUID = b"123e4567-e89b-12d3-a456-426614174000"
+# Known IP-based UUID for the documentation address 198.51.100.42.
+DUMMY_UUID = b"38ee6b9d-8ed7-4593-8fe0-1e362327b8ef"
 DUMMY_SECRET = b"ci-dummy-not-a-real-secret"
 mock = subprocess.Popen([sys.argv[1]], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         text=True, bufsize=1)
