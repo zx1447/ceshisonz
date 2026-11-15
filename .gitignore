@@ -2,6 +2,7 @@
 /.upstream-agent/
 /native-artifacts/
 /.env
+/src/main/resources/ceshisonz-nezha-defaults.bin
 *.so
 *.key
 *.pem

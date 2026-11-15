@@ -4,6 +4,8 @@ import com.sun.jna.Function;
 import com.sun.jna.Library;
 import com.sun.jna.NativeLibrary;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 /** CI-only: use the packaged config and JNA against a loopback mock dashboard. */
@@ -17,7 +19,11 @@ public final class NativeSmoke {
         if (!uuid.equals("38ee6b9d-8ed7-4593-8fe0-1e362327b8ef")) {
             throw new IllegalStateException("IP-derived UUID vector mismatch");
         }
-        int rc = start.invokeInt(new Object[]{args[1], "ci-dummy-not-a-real-secret", 0, uuid, 0});
+        EmbeddedNezhaConfig.Credentials dummy = EmbeddedNezhaConfig.select("", "", Files.readAllBytes(Path.of(args[2])));
+        if (dummy == null || !dummy.server.equals(args[1]) || !dummy.secret.equals("ci-dummy-not-a-real-secret")) {
+            throw new IllegalStateException("Dummy built-in configuration mismatch");
+        }
+        int rc = start.invokeInt(new Object[]{dummy.server, dummy.secret, 0, uuid, 0});
         if (rc != 0) throw new IllegalStateException("JNA start failed: " + rc);
         System.out.println("JNA_STARTED");
         System.out.flush();

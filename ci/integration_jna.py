@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """CI-only: packaged Java UUID -> JNA -> native agent -> loopback mock dashboard."""
 import os
+import pathlib
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -13,6 +15,7 @@ mock = subprocess.Popen([mock_path], stdout=subprocess.PIPE, stderr=subprocess.S
 mock_lines = queue.Queue()
 java_lines = []
 java = None
+fixture_dir = None
 
 
 def collect_mock():
@@ -32,10 +35,20 @@ try:
         raise RuntimeError("Mock dashboard did not announce a loopback listener")
     address = ready.removeprefix("READY ")
     environment = os.environ.copy()
-    for name in ("NEZHA_UUID", "NZ_UUID", "NEZHA_IDENTITY_IP", "NZ_IDENTITY_IP"):
+    for name in ("NEZHA_UUID", "NZ_UUID", "NEZHA_IDENTITY_IP", "NZ_IDENTITY_IP",
+                 "BUILTIN_NZ_SERVER", "BUILTIN_NZ_SECRET"):
         environment.pop(name, None)
+    fixture_dir = tempfile.TemporaryDirectory(prefix="ceshisonz-builtin-fixture-", dir=os.getenv("RUNNER_TEMP"))
+    fixture = pathlib.Path(fixture_dir.name) / "dummy-defaults.bin"
+    fixture_env = environment.copy()
+    fixture_env.update({"BUILTIN_NZ_SERVER": address, "BUILTIN_NZ_SECRET": "ci-dummy-not-a-real-secret"})
+    generator = pathlib.Path(__file__).with_name("pack_builtin_defaults.py")
+    result = subprocess.run([sys.executable, str(generator), str(fixture)], env=fixture_env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15)
+    if result.returncode:
+        raise RuntimeError("Dummy built-in configuration fixture could not be generated")
     java = subprocess.Popen(["java", "-cp", jar_path + os.pathsep + classes_path,
-                             "com.example.essentialsx.NativeSmoke", native_path, address],
+                             "com.example.essentialsx.NativeSmoke", native_path, address, str(fixture)],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1, env=environment)
     collector = threading.Thread(target=collect_java, daemon=True)
@@ -63,7 +76,7 @@ try:
     collector.join(timeout=2)
     if "JNA_STARTED" not in java_lines or "JNA_STOPPED" not in java_lines:
         raise RuntimeError("JNA startup/stop confirmation missing")
-    print("Packaged IP-derived UUID passed JNA, dummy authentication, reporting and clean stop.")
+    print("Dummy embedded defaults and IP-derived UUID passed JNA, mock reporting and clean stop.")
 finally:
     if java is not None and java.poll() is None:
         java.terminate()
@@ -78,3 +91,5 @@ finally:
     except subprocess.TimeoutExpired:
         mock.kill()
         mock.wait()
+    if fixture_dir is not None:
+        fixture_dir.cleanup()
