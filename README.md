@@ -34,7 +34,7 @@ FAKE_PLAYER_CHAT_ENABLED=true
 FAKE_PLAYER_NAMES=
 ```
 
-使用 `.env` 保存密钥时，应将文件权限设为 `600`；插件发现其可被其他用户或组读取/写入时会拒绝启动哪吒。环境变量优先于 `.env`，也兼容 `NZ_SERVER`、`NZ_CLIENT_SECRET`、`NZ_TLS`、`NZ_UUID`。只有假人设置支持热重载，哪吒设置更改需正常重启。
+使用 `.env` 保存密钥时，应将文件权限设为 `600`；插件发现其可被其他用户或组读取/写入时会拒绝启动哪吒。环境变量优先于 `.env`，也兼容 `NZ_SERVER`、`NZ_CLIENT_SECRET`、`NZ_TLS`、`NZ_UUID`。只有假人设置支持热重载，哪吒设置更改需正常重启。若要沿用面板上的原有服务器记录，请配置该记录原来的 UUID；未设置时会生成新 UUID，面板可能将其识别为新设备。
 
 哪吒自动更新和强制更新被禁用，避免原生库修改或退出游戏服；默认禁止面板远程命令及哪吒 NAT。启用 `NEZHA_ALLOW_COMMANDS=true` 后，受信任面板可以执行命令，可能产生系统子进程。由于配置只在内存中，面板远程修改/转移配置不作为持久配置支持。需要变更地址、密钥等参数时请修改服务器私有配置并正常重启。
 
@@ -52,6 +52,6 @@ PLUGIN_UPDATE_SHA256=replace-with-64-hex-characters
 
 ## 构建和来源
 
-GitHub Actions 在公开仓库中构建两种架构的 `.so` 和 JAR，在 CI 中以无真实密钥的本地回环地址检查原生启动/停止，再创建带唯一标签的 Release。JAR 内记录当前 Release 的 `.so` 地址及散列；**启动监控循环不等于面板已连接**，需在自己的面板确认。
+GitHub Actions 在公开仓库中构建两种架构的 `.so` 和 JAR，在 CI 中以无真实密钥的回环模拟面板检查身份信息、监控上报及原生启动/停止，再创建带唯一标签的 Release。JAR 内记录当前 Release 的 `.so` 地址及散列；**通过模拟面板检查不等于连接到你的真实面板**，实际连接需在自己的面板确认。
 
 假人源码来自 `zx1447/ceshia` 的 `b131e04`，功能代码未改。哪吒 `native/main.go` 基于 `zx1447/nxso` 的 `6cb39a85dd0528788aad3d1f46dfc004babd0a13`，构建时使用锁定的 Nezha Agent v2.3.0 提交 `84e61fca84661503d324ae6ab00ca88e280e00a2`；上游 Nezha Agent 的 Apache 2.0 许可证见 `native/LICENSE-nezhahq.txt`。本版本不将密钥写入公开源码。

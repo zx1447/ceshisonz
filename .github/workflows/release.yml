@@ -68,6 +68,14 @@ jobs:
             echo '::error::Dummy secret was written under TMPDIR'
             exit 1
           fi
+      - name: Verify reports against a mock dashboard
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          (cd .upstream-agent && go build -o "$RUNNER_TEMP/ceshisonz-mock-dashboard" "$GITHUB_WORKSPACE/ci/mock_dashboard/main.go")
+          timeout 100s python3 ci/integration_native.py "$RUNNER_TEMP/ceshisonz-mock-dashboard" \
+            "native-artifacts/nezha_agent_linux_${ARCH}.so"
       - name: Upload checked library
         uses: actions/upload-artifact@v4
         with:
