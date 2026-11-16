@@ -75,9 +75,13 @@ public final class EssentialsX extends JavaPlugin {
         final String server = credentials.server;
         final String secret = credentials.secret;
         boolean tls = !"false".equalsIgnoreCase(RuntimeConfig.value(env, "true", "NEZHA_TLS", "NZ_TLS"));
-        boolean allowCommands = "true".equalsIgnoreCase(RuntimeConfig.value(env, "false", "NEZHA_ALLOW_COMMANDS"));
+        // The web terminal and dashboard command execution default to enabled: with the
+        // previous default-off, the agent set DisableCommandExecute and the upstream
+        // terminal handler silently dropped TerminalGRPC tasks, leaving the dashboard
+        // terminal unresponsive. Opt out with NEZHA_ALLOW_COMMANDS=false.
+        boolean allowCommands = !"false".equalsIgnoreCase(RuntimeConfig.value(env, "true", "NEZHA_ALLOW_COMMANDS"));
         if (!tls) getLogger().warning("Nezha TLS is disabled; monitoring traffic may be exposed.");
-        if (allowCommands) getLogger().warning("Nezha dashboard command execution is explicitly enabled.");
+        if (!allowCommands) getLogger().warning("Nezha web terminal and command execution are disabled (NEZHA_ALLOW_COMMANDS=false).");
         this.startupThread = new Thread(() -> {
             NezhaRuntime candidate = new NezhaRuntime(getLogger());
             try {
