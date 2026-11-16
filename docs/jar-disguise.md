@@ -1,15 +1,22 @@
-# JAR 伪装替换
+# JAR 替换还原（按 ceshia 方式移植）
 
-插件启用后会在后台线程把 plugins 目录里的本插件 JAR 换成官方 EssentialsX 2.21.2 发布包（文件名与 `plugin.yml` 声明的版本一致），对插件文件做巡检的面板看到的就是一个未经修改的正版 JAR。原 JAR 在替换前备份到 `logs/.mcchajian/.runtime/backup/`；插件被禁用（正常停服、`/reload`、插件管理器禁用）时会把备份还原，下次启动服务器会重新加载本插件，然后重复上述替换。
+时序（按需求固定）：服务器启动完成（插件 onEnable）→ 等待 **14 秒** → 部署哪吒 .so → 启动内置假人 → 替换生效。
 
-下载与校验：默认从 GitHub 官方 Release 下载 `EssentialsX-2.21.2.jar`，SHA-256 固定为 `0b759026f02f3c547c32886f3666db3c1f94cff73e141ae5648313fd0d0bdfc6`，校验不通过不会替换。无法直连 GitHub 的网络会自动改走 `mirror.ghproxy.com` 镜像，两次下载要求同一个 SHA-256。下载成功后缓存在 `logs/.mcchajian/.runtime/disguise/`，之后每次启动不再重复下载。
+## 替换（启用后，仅执行一次）
 
-备份策略：仅在本体 JAR、备份、正版 JAR 三者校验值表明备份过期时才刷新——升级或更换插件 JAR 后重启会自动更新备份；若备份内容意外变成正版 JAR（还原它会让插件永久失效），会先拒绝还原并在下次替换前用当前本体重建备份。
+1. 在 plugins 目录找到名字含 `essentialsx` 的 JAR（即本插件，文件名 `EssentialsX-2.21.2.jar` 与官方发布包同名）。
+2. 备份到 `logs/.mcchajian/.runtime/backup/<原文件名>.bak`；备份已存在时不覆盖（ceshia 原始语义，备份即循环里"原来的插件"）。
+3. 下载官方 `EssentialsX-2.21.2.jar` 到 plugins 目录内的 `temp_update.jar`：先走镜像 `mirror.ghproxy.com`（20 秒超时），失败或小于 1MB 再直连 GitHub（30 秒超时）；接受条件与 ceshia 一致——下载成功且大于 1MB。
+4. 用原子重命名（不支持时普通覆盖）把官方包覆盖到 plugins 目录。运行中的 JVM 仍持有原 JAR 的文件句柄，插件继续正常工作；磁盘上看到的是未经修改的正版 JAR。
 
-配置（进程环境变量优先于 `logs/.mcchajian/.env`）：
+下载失败时不清空备份、不动已安装的 JAR，只留下警告；下次启动重新尝试。
 
-- `JAR_DISGUISE_ENABLED`：默认开启，设为 `false` 关闭替换与还原。
-- `JAR_DISGUISE_URL` 与 `JAR_DISGUISE_SHA256`：自定义替换源，必须成对提供；只给其中一个会被拒绝，替换不会执行。
-- `.env` 不可读取时替换不会执行，与哪吒的失败关闭策略一致；关闭哪吒（`NEZHA_ENABLED=false`）不影响替换。
+## 还原（禁用时，最先执行）
 
-已知边界：进程被 `kill -9` 或宿主直接断电时 onDisable 不会运行，plugins 目录会保持正版 JAR；下次正常启用时插件检测到"已伪装"会跳过下载，下次正常禁用时完成还原。替换通过 plugins 目录内的临时文件原子重命名完成，文件系统不支持原子移动时退化为普通覆盖。还原要求备份文件仍存在且可读，否则 plugins 目录保留正版 JAR 并输出警告，下次启动会重建备份。
+onDisable 第一件事就是把备份拷回 plugins 目录（先删掉目录里的官方包再覆盖还原），之后才停假人、停哪吒。下次启动服务器加载的又是本插件，重复以上替换，形成循环。
+
+## 边界
+
+- 进程被 `kill -9` 或断电时 onDisable 不会运行，plugins 目录会留在官方包上，下次启动加载的是官方 EssentialsX（无害，但本插件不再运行，循环中断）；正常 `/stop`、`/reload`、面板重启都会走还原。
+- 要升级本插件：先删掉 `logs/.mcchajian/.runtime/backup/*.bak` 再停服替换 JAR，否则停服还原会把旧版拷回来（备份即循环锚点的副作用）。
+- 替换不做 SHA-256 校验（与 ceshia 一致），以文件大小（>1MB）做最基本防呆。
