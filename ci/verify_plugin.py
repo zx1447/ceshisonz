@@ -22,6 +22,7 @@ with zipfile.ZipFile(jar_path) as jar:
         "com/example/essentialsx/FakePlayerEngine.class",
         "com/example/essentialsx/NezhaRuntime.class",
         "com/example/essentialsx/NezhaIdentity.class",
+        "com/example/essentialsx/JarDisguise.class",
         "com/sun/jna/Native.class",
     }
     missing = required - names
