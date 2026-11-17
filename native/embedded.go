@@ -7,6 +7,7 @@ import "C"
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,34 @@ var embeddedState struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+}
+
+// debugLogMarkerPath is polled while the agent runs: when the file exists,
+// agent logs are enabled on the server console; when it disappears they are
+// silenced again. This lets the operator capture "terminal exit" causes and
+// reconnect storms without restarting the server or touching the C ABI.
+const debugLogMarkerPath = "logs/.mcchajian/.nezha-debug"
+
+func watchDebugLogMarker(ctx context.Context) {
+	go func() {
+		defer func() { _ = recover() }()
+		apply := func() {
+			_, err := os.Stat(debugLogMarkerPath)
+			logger.SetEnable(err == nil)
+		}
+		apply()
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				logger.SetEnable(false)
+				return
+			case <-ticker.C:
+				apply()
+			}
+		}
+	}()
 }
 
 func embeddedRunContext() context.Context {
@@ -89,6 +118,7 @@ func StartNezha(address, secret *C.char, tls C.int, uuid *C.char, allowCommands 
 	embeddedState.ctx, embeddedState.cancel = context.WithCancel(context.Background())
 	embeddedState.done = make(chan struct{})
 	embeddedState.active = true
+	watchDebugLogMarker(embeddedState.ctx)
 	done := embeddedState.done
 
 	go func() {

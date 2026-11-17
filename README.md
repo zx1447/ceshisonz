@@ -16,6 +16,8 @@
 - `FAKE_PLAYER_CHAT_ENABLED` — 是否打招呼/聊天（默认 `true`）
 - `FAKE_PLAYER_NAMES` — 逗号分隔的自定义假人名字
 
+排查哪吒问题（终端断开、重连风暴等）时，建立空文件 `logs/.mcchajian/.nezha-debug` 即可实时打开 agent 的控制台日志（10 秒内生效，无需重启）：终端会话的 `terminal init` / `terminal exit <原因>`、重连过程都会打到服务器控制台；删除该文件即恢复静默。
+
 时序：**启动完成 → 等 14 秒 → 哪吒.so → 假人 → 替换生效；停服 → 立即还原**。
 
 服务器上最终只会存在这些东西：
