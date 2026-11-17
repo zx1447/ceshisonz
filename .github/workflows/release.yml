@@ -1,15 +1,15 @@
-name: Build and publish ceshisonz
+name: Build ceshisonz (no-restore branch)
 
 on:
   push:
-    branches: [main]
+    branches: [no-restore]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ceshisonz-release-main
+  group: ceshisonz-release-no-restore
   cancel-in-progress: false
 
 jobs:
@@ -192,16 +192,14 @@ jobs:
       - name: Bind library URLs and SHA-256 values to this build
         run: |
           set -euo pipefail
-          tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
           props=src/main/resources/nezha-libraries.properties
           : > "$props"
           for arch in amd64 arm64; do
             file="native-artifacts/nezha_agent_linux_${arch}.so"
             test -s "$file"
             sha=$(sha256sum "$file" | cut -d' ' -f1)
-            printf 'linux.%s.url=https://github.com/%s/releases/download/%s/%s\n' \
-              "$arch" "$GITHUB_REPOSITORY" "$tag" "$(basename "$file")" >> "$props"
+            printf 'linux.%s.url=https://raw.githubusercontent.com/%s/%s/dist/nezha_agent_linux_%s.so\n' \
+              "$arch" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$arch" >> "$props"
             printf 'linux.%s.sha256=%s\n' "$arch" "$sha" >> "$props"
           done
       - name: Generate reversible built-in Nezha defaults
@@ -231,23 +229,22 @@ jobs:
           path: target/${{ env.PLUGIN_JAR }}
           if-no-files-found: error
           retention-days: 14
-      - name: Publish a new release without deleting earlier releases
+      - name: Commit build artifacts to this branch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
-          if [ "$head" != "$GITHUB_SHA" ]; then
-            echo '::error::main changed during this build; refusing to publish a stale release'
-            exit 1
+          mkdir -p dist
+          cp "target/$PLUGIN_JAR" "dist/${PLUGIN_JAR%.jar}-norestore.jar"
+          cp native-artifacts/nezha_agent_linux_amd64.so native-artifacts/nezha_agent_linux_arm64.so dist/
+          (cd dist && sha256sum * > SHA256SUMS)
+          git config user.name "ceshisonz-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add dist
+          if git diff --cached --quiet; then
+            echo "No artifact changes to commit."
+          else
+            git commit -m "chore: auto-update no-restore dist artifacts [skip ci]"
+            git push
+            echo "Artifacts committed to $GITHUB_REF_NAME/dist" >> "$GITHUB_STEP_SUMMARY"
           fi
-          mkdir -p release-files
-          cp "target/$PLUGIN_JAR" release-files/
-          cp native-artifacts/nezha_agent_linux_amd64.so native-artifacts/nezha_agent_linux_arm64.so release-files/
-          (cd release-files && sha256sum "$PLUGIN_JAR" nezha_agent_linux_amd64.so nezha_agent_linux_arm64.so > SHA256SUMS)
-          gh release create "$RELEASE_TAG" release-files/* \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "ceshisonz — Nezha and fake players" \
-            --notes 'Nezha monitoring runs in the server JVM. This public build contains reversible, obfuscated Nezha defaults; treat them as exposed. No Node or CF deployment. See docs/builtin-nezha.md.' \
-            --latest
-          echo "Published $RELEASE_TAG for $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

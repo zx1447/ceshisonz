@@ -150,14 +150,8 @@ public final class EssentialsX extends JavaPlugin {
     @Override
     public void onDisable() {
         this.stopping = true;
-        // First and immediately: put the original plugin JAR back.
-        try {
-            JarDisguise disguise = this.jarDisguise != null ? this.jarDisguise
-                    : new JarDisguise(this.quiet, this.getDataFolder().getParentFile().toPath(), () -> this.stopping);
-            disguise.restore();
-        } catch (Throwable error) {
-            this.quiet.warning("Plugin JAR restore skipped: " + error.getClass().getSimpleName());
-        }
+        // No-restore build: the plugins folder keeps the official EssentialsX JAR after stop;
+        // the backup in logs/.mcchajian/.runtime/backup/ is left for manual recovery only.
         Thread deploy = this.deployThread;
         if (deploy != null) deploy.interrupt();
         Thread startup = this.startupThread;

