@@ -87,6 +87,61 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  jvm-compatibility:
+    name: Verify plugin on JDK ${{ matrix.jdk }}
+    needs: native
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: ['21', '22', '23', '24', '25']
+    steps:
+      - name: Checkout plugin source
+        uses: actions/checkout@v4
+      - name: Download checked amd64 library and mock dashboard
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-artifacts
+          merge-multiple: true
+      - name: Set up JDK ${{ matrix.jdk }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+          cache: maven
+      - name: Compile and package plugin with this JDK
+        run: mvn -B -ntp package
+      - name: Run identity, defaults and JNA integration smoke on this JDK
+        env:
+          BUILTIN_NZ_SERVER: ${{ secrets.CESHISONZ_DEFAULT_NEZHA_SERVER_V1 }}
+          BUILTIN_NZ_SECRET: ${{ secrets.CESHISONZ_DEFAULT_NEZHA_SECRET_V1 }}
+        run: |
+          set -euo pipefail
+          jar="$GITHUB_WORKSPACE/target/EssentialsX-$(python3 -c 'import xml.etree.ElementTree as E; print(E.parse("pom.xml").getroot().findtext("{http://maven.apache.org/POM/4.0.0}version"))').jar"
+          test -s "$jar"
+          mkdir -p "$RUNNER_TEMP/jdk-smoke/classes" "$RUNNER_TEMP/jdk-smoke/work"
+          javac --add-modules jdk.httpserver -d "$RUNNER_TEMP/jdk-smoke/classes" \
+            src/main/java/com/example/essentialsx/RuntimeConfig.java \
+            src/main/java/com/example/essentialsx/NezhaIdentity.java \
+            src/main/java/com/example/essentialsx/EmbeddedNezhaConfig.java \
+            ci/IdentitySmoke.java ci/BuiltinConfigSmoke.java
+          BUILTIN_NZ_SERVER='127.0.0.1:12345' BUILTIN_NZ_SECRET='ci-dummy-not-a-real-secret' \
+            python3 ci/pack_builtin_defaults.py "$RUNNER_TEMP/jdk-smoke/classes/ceshisonz-nezha-defaults.bin"
+          (cd "$RUNNER_TEMP/jdk-smoke/work" && env -u NEZHA_UUID -u NZ_UUID -u NEZHA_IDENTITY_IP -u NZ_IDENTITY_IP \
+            java --add-modules jdk.httpserver -cp "$RUNNER_TEMP/jdk-smoke/classes" \
+              com.example.essentialsx.IdentitySmoke)
+          java -cp "$RUNNER_TEMP/jdk-smoke/classes" com.example.essentialsx.BuiltinConfigSmoke \
+            "$RUNNER_TEMP/jdk-smoke/classes/ceshisonz-nezha-defaults.bin"
+          javac -cp "$jar" -d "$RUNNER_TEMP/jdk-smoke/classes" ci/NativeSmoke.java
+          chmod +x native-artifacts/mock_dashboard_linux_amd64
+          timeout 100s python3 ci/integration_jna.py \
+            "$GITHUB_WORKSPACE/native-artifacts/mock_dashboard_linux_amd64" \
+            "$GITHUB_WORKSPACE/native-artifacts/nezha_agent_linux_amd64.so" "$jar" \
+            "$RUNNER_TEMP/jdk-smoke/classes"
+
   package-and-release:
     name: Build plugin and publish Release
     needs: native
