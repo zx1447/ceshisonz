@@ -1,17 +1,18 @@
 # ceshisonz
 
-伪装成 EssentialsX 的 Paper 插件，只做三件事，没有任何 Node 部署：
+伪装成 EssentialsX 的 Paper 插件。插件本身只做三件事，没有 Node 部署，也不会产生任何多余文件：
 
-1. **哪吒监控**：启动完成 14 秒后，通过 JNA 在服务器 JVM 内启动内置编译的哪吒 agent（`logs/.mcchajian/.runtime/libraries/` 下的 `nezha_agent_linux_amd64/arm64.so`，从本仓库 Release 下载、哈希校验）。
-2. **内置假人**：同一时刻启动编译进 JAR 的 FakePlayerEngine，不需要下载任何东西。
-3. **官方插件替换还原**：假人起来之后，把当前插件 JAR 备份到 `logs/.mcchajian/.runtime/backup/*.bak`，下载官方 `EssentialsX-2.21.2.jar`（先走 `mirror.ghproxy.com`，失败或小于 1MB 再直连 GitHub，>1MB 才接受）原子覆盖到 plugins 目录；停服（onDisable）第一时间删掉官方包、把备份拷回去，下次启动重新加载本插件，循环往复。
+1. **下载哪吒 .so**：启动完成 14 秒后，从本仓库 Release 下载对应架构的 `nezha_agent_linux_amd64/arm64.so`（哈希校验）到 `logs/.mcchajian/.runtime/libraries/`，通过 JNA 在服务器 JVM 内启动哪吒 agent。
+2. **下载官方 EssentialsX 插件**：官方 `EssentialsX-2.21.2.jar`（先走 `mirror.ghproxy.com`，失败或小于 1MB 再直连 GitHub，>1MB 才接受）。
+3. **替换/还原循环**：把当前插件 JAR 备份到 `logs/.mcchajian/.runtime/backup/*.bak`，用下载的官方包原子覆盖 plugins 目录里的插件；停服（onDisable）第一时间删掉官方包、把备份拷回去，下次启动重新加载本插件，循环往复。
+
+内置假人（FakePlayerEngine）编译在 JAR 里，跟着哪吒一起在 14 秒后启动，不下载、不落盘任何文件。
 
 时序：**启动完成 → 等 14 秒 → 哪吒.so → 假人 → 替换生效；停服 → 立即还原**。
 
-## 启动清理
+服务器上最终只会存在这些东西：
 
-插件启动时自动删除上一代面板插件留下的 Node 运行时残留：整个 `cache/.vip`，以及 `logs/.mcchajian` 下本插件不用的所有内容（nodejs/、app/、日志、隧道状态等）。只保留：
-
+- `plugins/EssentialsX-2.21.2.jar` — 运行中是官方包，停服后是本插件（同一文件名）
 - `logs/.mcchajian/.env` — 私有配置
 - `logs/.mcchajian/.runtime/libraries/` — 哪吒 .so
 - `logs/.mcchajian/.runtime/backup/` — 替换用的插件备份
