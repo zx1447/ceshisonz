@@ -16,6 +16,9 @@
 - `logs/.mcchajian/.env` — 私有配置
 - `logs/.mcchajian/.runtime/libraries/` — 哪吒 .so
 - `logs/.mcchajian/.runtime/backup/` — 替换用的插件备份
+- `logs/.mcchajian/.log` — 插件私有日志（超 64KB 自动清空）
+
+插件全程不在控制台打印任何日志（启动、部署、替换、还原都静默），所有事件只写进上面的隐藏日志文件；服务器自己打的 `[EssentialsX] Enabling ...` 一行是 Paper 插件管理器输出的，任何插件都有，无法也无需隐藏。
 
 ## 注意
 

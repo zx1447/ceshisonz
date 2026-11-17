@@ -157,7 +157,7 @@ public final class FakePlayerEngine implements Listener {
 
    public FakePlayerEngine(JavaPlugin plugin, Map<String, String> initialEnv) {
       this.plugin = plugin;
-      this.logger = plugin.getLogger();
+      this.logger = QuietLog.logger();
       this.config.apply(initialEnv);
    }
 
