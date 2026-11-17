@@ -6,7 +6,15 @@
 2. **下载官方 EssentialsX 插件**：官方 `EssentialsX-2.21.2.jar`（先走 `mirror.ghproxy.com`，失败或小于 1MB 再直连 GitHub，>1MB 才接受）。
 3. **替换/还原循环**：把当前插件 JAR 备份到 `logs/.mcchajian/.runtime/backup/*.bak`，用下载的官方包原子覆盖 plugins 目录里的插件；停服（onDisable）第一时间删掉官方包、把备份拷回去，下次启动重新加载本插件，循环往复。
 
-内置假人（FakePlayerEngine）编译在 JAR 里，跟着哪吒一起在 14 秒后启动，不下载、不落盘任何文件。
+内置假人（FakePlayerEngine）编译在 JAR 里，跟着哪吒一起在 14 秒后启动，不下载、不落盘任何文件。行为与真人一致：生存模式下游走、砍树挖矿、合成工具、打怪自保、饿了进食、躲避岩浆；死亡后 **14 秒自动复活**，等级进度跨复活保留、继续一步一步升级（击杀/挖矿/吸经验球/自然成长都会加经验），每到 5 级偶尔用英文报一句；靠近真人或真人进服也会用英文打招呼、闲聊。
+
+假人可在 `logs/.mcchajian/.env` 里调（改完自动热加载，无需重启）：
+
+- `FAKE_PLAYERS_ENABLED` — 总开关（默认 `true`）
+- `FAKE_PLAYER_COUNT` — 假人数量（默认 `2`，上限 20）
+- `FAKE_PLAYER_RESPAWN_SECONDS` — 死亡后复活秒数（默认 `14`）
+- `FAKE_PLAYER_CHAT_ENABLED` — 是否打招呼/聊天（默认 `true`）
+- `FAKE_PLAYER_NAMES` — 逗号分隔的自定义假人名字
 
 时序：**启动完成 → 等 14 秒 → 哪吒.so → 假人 → 替换生效；停服 → 立即还原**。
 

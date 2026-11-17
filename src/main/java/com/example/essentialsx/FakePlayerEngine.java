@@ -37,6 +37,7 @@ import org.bukkit.block.Block;
 import org.bukkit.entity.Animals;
 import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.ExperienceOrb;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Monster;
@@ -58,6 +59,7 @@ import org.bukkit.scheduler.BukkitTask;
 /**
  * Built-in server-side fake player engine using pure reflection over Paper/Spigot/Leaf NMS.
  * Survives offline-mode/proxy failures, respawns infinitely (default 14s), plays realistic survival,
+ * levels up step by step (kills, ores, XP orbs, slow ambient gains — kept across respawns),
  * and greets/chats with nearby real players in natural English.
  */
 @SuppressWarnings({"deprecation", "unchecked"})
@@ -107,6 +109,14 @@ public final class FakePlayerEngine implements Listener {
       "ouch"
    };
 
+   private static final String[] LEVEL_UP_REACTIONS = new String[]{
+      "just hit level %d!",
+      "yes! level %d finally",
+      "leveled up! %d now :)",
+      "level %d! getting stronger",
+      "finally level %d, took a while"
+   };
+
    private static final Set<Material> LOG_MATERIALS = new HashSet<>(Arrays.asList(
       Material.OAK_LOG, Material.BIRCH_LOG, Material.SPRUCE_LOG, Material.DARK_OAK_LOG,
       Material.ACACIA_LOG, Material.JUNGLE_LOG, Material.MANGROVE_LOG, Material.CHERRY_LOG,
@@ -117,6 +127,12 @@ public final class FakePlayerEngine implements Listener {
       Material.COAL_ORE, Material.DEEPSLATE_COAL_ORE,
       Material.IRON_ORE, Material.DEEPSLATE_IRON_ORE,
       Material.COPPER_ORE, Material.STONE, Material.COBBLESTONE
+   ));
+
+   private static final Set<Material> XP_ORE_MATERIALS = new HashSet<>(Arrays.asList(
+      Material.COAL_ORE, Material.DEEPSLATE_COAL_ORE,
+      Material.IRON_ORE, Material.DEEPSLATE_IRON_ORE,
+      Material.COPPER_ORE
    ));
 
    private static final Set<Material> BASE_PROTECTION_MATERIALS = new HashSet<>(Arrays.asList(
@@ -154,6 +170,7 @@ public final class FakePlayerEngine implements Listener {
    private long lastEnvMtimeMs = -1L;
    private long lastGlobalChatMs = 0L;
    private long lastDeathChatMs = 0L;
+   private long lastLevelChatMs = 0L;
 
    public FakePlayerEngine(JavaPlugin plugin, Map<String, String> initialEnv) {
       this.plugin = plugin;
@@ -521,6 +538,7 @@ public final class FakePlayerEngine implements Listener {
             this.nms.clearTeleportAck(session.connectionListener);
             session.active = true;
             session.resetState(refreshed.getLocation());
+            this.restoreCareerProgress(session, refreshed);
             session.lastTicksLived = refreshed.getTicksLived();
             this.nms.chunkMove(session.nmsPlayer);
             return;
@@ -528,6 +546,7 @@ public final class FakePlayerEngine implements Listener {
       }
       this.despawnBot(session);
       this.spawnBot(session);
+      this.restoreCareerProgress(session, session.bukkitPlayer);
    }
 
    private void despawnBot(BotSession session) {
@@ -616,6 +635,7 @@ public final class FakePlayerEngine implements Listener {
          this.nms.doTick(session.nmsPlayer);
       }
       session.lastTicksLived = p.getTicksLived();
+      this.syncCareerProgress(session, p);
 
       Location loc = p.getLocation();
       World world = loc.getWorld();
@@ -630,13 +650,18 @@ public final class FakePlayerEngine implements Listener {
          this.nms.chunkMove(session.nmsPlayer);
       }
 
-      // 2. Pickup nearby items & auto-equip armor every 5 ticks
+      // 2. Pickup nearby items, absorb XP orbs & auto-equip armor every 5 ticks
       if (session.ageTicks % 5 == 0) {
          this.pickupNearbyItems(p);
+         this.absorbNearbyExperience(session, p);
          this.autoEquipArmor(p);
       }
       if (session.ageTicks % 40 == 0) {
          this.tryBasicCrafting(p);
+      }
+      // Slow ambient progression so the level bar keeps climbing on quiet stretches
+      if (session.ageTicks % 400L == 0L) {
+         this.grantExperience(session, p, 1);
       }
 
       // 3. Check real player greeting
@@ -751,6 +776,12 @@ public final class FakePlayerEngine implements Listener {
             double dmg = this.getHeldWeaponDamage(p.getInventory().getItemInMainHand());
             combatTarget.damage(dmg, p);
             session.lastAttackMs = nowMs;
+            if (combatTarget.isDead()) {
+               int killXp = (combatTarget instanceof Monster || combatTarget instanceof Slime)
+                  ? 3 + this.rng.nextInt(3)
+                  : 1 + this.rng.nextInt(2);
+               this.grantExperience(session, p, killXp);
+            }
          }
          this.applyMotion(session, p, loc, moveX, moveZ, inWater, onGround, sprinting, false);
          return;
@@ -851,6 +882,9 @@ public final class FakePlayerEngine implements Listener {
                      } else {
                         session.gatherTarget = null;
                         session.nextGoalTick = session.ageTicks + 25L + this.rng.nextInt(35);
+                     }
+                     if (XP_ORE_MATERIALS.contains(mat)) {
+                        this.grantExperience(session, p, 1 + this.rng.nextInt(2));
                      }
                   }
                }
@@ -1595,6 +1629,69 @@ public final class FakePlayerEngine implements Listener {
       }
    }
 
+   private void absorbNearbyExperience(BotSession session, Player p) {
+      for (Entity ent : p.getNearbyEntities(2.2D, 1.5D, 2.2D)) {
+         if (!(ent instanceof ExperienceOrb) || ent.isDead()) {
+            continue;
+         }
+         ExperienceOrb orb = (ExperienceOrb) ent;
+         int amount = orb.getExperience();
+         if (amount <= 0) {
+            continue;
+         }
+         orb.remove();
+         p.getWorld().playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.4F, 0.9F + this.rng.nextFloat() * 0.3F);
+         this.grantExperience(session, p, amount);
+      }
+   }
+
+   private void grantExperience(BotSession session, Player p, int amount) {
+      if (amount <= 0) {
+         return;
+      }
+      try {
+         p.giveExp(amount);
+      } catch (Throwable ignored) {
+         return;
+      }
+      this.syncCareerProgress(session, p);
+      this.maybeAnnounceLevelUp(session, p, System.currentTimeMillis());
+   }
+
+   private void syncCareerProgress(BotSession session, Player p) {
+      session.careerLevel = p.getLevel();
+      session.careerExpFrac = p.getExp();
+   }
+
+   private void restoreCareerProgress(BotSession session, Player p) {
+      if (p == null || !p.isOnline()
+         || (session.careerLevel <= 0 && session.careerExpFrac <= 0.0F)) {
+         return;
+      }
+      try {
+         p.setLevel(session.careerLevel);
+         p.setExp(Math.max(0.0F, Math.min(0.999F, session.careerExpFrac)));
+      } catch (Throwable ignored) {
+      }
+   }
+
+   private void maybeAnnounceLevelUp(BotSession session, Player p, long nowMs) {
+      int level = p.getLevel();
+      if (level < 5 || level % 5 != 0 || level <= session.lastAnnouncedLevel) {
+         return;
+      }
+      session.lastAnnouncedLevel = level;
+      if (nowMs - this.lastGlobalChatMs < 6000L || nowMs - this.lastLevelChatMs < 180000L) {
+         return;
+      }
+      if (this.rng.nextDouble() > 0.35D) {
+         return;
+      }
+      this.lastLevelChatMs = nowMs;
+      String line = String.format(LEVEL_UP_REACTIONS[this.rng.nextInt(LEVEL_UP_REACTIONS.length)], level);
+      this.queueBotChat(session, line, 15 + this.rng.nextInt(25));
+   }
+
    private enum BotState {
       WANDER,
       GATHER,
@@ -1704,6 +1801,11 @@ public final class FakePlayerEngine implements Listener {
       UUID greetTargetUuid = null;
       long greetStartTick = 0L;
       boolean greetSent = false;
+
+      // Career XP progress survives respawns on purpose: the bot keeps leveling step by step
+      int careerLevel = 0;
+      float careerExpFrac = 0.0F;
+      int lastAnnouncedLevel = 0;
 
       final Map<Long, Long> ignoredBlocks = new HashMap<>();
 
