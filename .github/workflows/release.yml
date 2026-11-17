@@ -234,10 +234,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p dist
+          rm -rf dist
+          mkdir dist
           cp "target/$PLUGIN_JAR" "dist/${PLUGIN_JAR%.jar}-norestore.jar"
           cp native-artifacts/nezha_agent_linux_amd64.so native-artifacts/nezha_agent_linux_arm64.so dist/
-          (cd dist && sha256sum * > SHA256SUMS)
+          # Explicit list: a glob would pick up the previous run's SHA256SUMS and self-reference it.
+          (cd dist && sha256sum "${PLUGIN_JAR%.jar}-norestore.jar" nezha_agent_linux_amd64.so nezha_agent_linux_arm64.so > SHA256SUMS)
           git config user.name "ceshisonz-bot"
           git config user.email "actions@users.noreply.github.com"
           git add -f dist
