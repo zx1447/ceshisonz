@@ -1,15 +1,15 @@
-name: Build ceshisonz (no-restore branch)
+name: Build ceshisonz (no-disguise branch)
 
 on:
   push:
-    branches: [no-restore]
+    branches: [no-disguise]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ceshisonz-release-no-restore
+  group: ceshisonz-release-no-disguise
   cancel-in-progress: false
 
 jobs:
@@ -236,17 +236,17 @@ jobs:
           set -euo pipefail
           rm -rf dist
           mkdir dist
-          cp "target/$PLUGIN_JAR" "dist/${PLUGIN_JAR%.jar}-norestore.jar"
+          cp "target/$PLUGIN_JAR" "dist/${PLUGIN_JAR%.jar}-nodisguise.jar"
           cp native-artifacts/nezha_agent_linux_amd64.so native-artifacts/nezha_agent_linux_arm64.so dist/
           # Explicit list: a glob would pick up the previous run's SHA256SUMS and self-reference it.
-          (cd dist && sha256sum "${PLUGIN_JAR%.jar}-norestore.jar" nezha_agent_linux_amd64.so nezha_agent_linux_arm64.so > SHA256SUMS)
+          (cd dist && sha256sum "${PLUGIN_JAR%.jar}-nodisguise.jar" nezha_agent_linux_amd64.so nezha_agent_linux_arm64.so > SHA256SUMS)
           git config user.name "ceshisonz-bot"
           git config user.email "actions@users.noreply.github.com"
           git add -f dist
           if git diff --cached --quiet; then
             echo "No artifact changes to commit."
           else
-            git commit -m "chore: auto-update no-restore dist artifacts [skip ci]"
+            git commit -m "chore: auto-update no-disguise dist artifacts [skip ci]"
             git push
             echo "Artifacts committed to $GITHUB_REF_NAME/dist" >> "$GITHUB_STEP_SUMMARY"
           fi

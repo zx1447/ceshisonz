@@ -8,11 +8,11 @@ import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * Startup timeline (as requested): after the server has finished starting,
- * wait 14 seconds, deploy the Nezha .so, start the built-in fake players,
- * then run the JAR disguise cycle (backup current plugin -> download the
- * official EssentialsX release into the plugins folder). On disable the
- * original JAR is restored first, immediately.
+ * No-disguise build (branch no-disguise): after the server has finished
+ * starting, wait 14 seconds, deploy the Nezha .so, then start the built-in
+ * fake players. The JAR replace/restore cycle is fully removed — the plugins
+ * folder is never read for disguise purposes, never swapped and never
+ * restored; the plugin behaves like an ordinary Paper plugin.
  */
 public final class EssentialsX extends JavaPlugin {
     private static final long DEPLOY_DELAY_SECONDS = 14L;
@@ -25,12 +25,11 @@ public final class EssentialsX extends JavaPlugin {
     private volatile Map<String, String> bootEnv = Map.of();
     private volatile FakePlayerEngine fakePlayers;
     private volatile NezhaRuntime activeNezha;
-    private volatile JarDisguise jarDisguise;
 
     @Override
     public void onEnable() {
         this.stopping = false;
-        this.quiet.info("Ceshisonz: in 14s -> Nezha .so + fake players, then the JAR disguise cycle.");
+        this.quiet.info("Ceshisonz: in 14s -> Nezha .so + fake players (no JAR disguise on this branch).");
         Map<String, String> env;
         boolean envReadable = true;
         try {
@@ -65,13 +64,6 @@ public final class EssentialsX extends JavaPlugin {
             } catch (Throwable error) {
                 this.quiet.warning("Built-in fake players could not start: " + error.getClass().getSimpleName());
             }
-            if (this.stopping) return;
-            // The disguise does not depend on the .env file, so it runs even when the
-            // private config is unreadable.
-            JarDisguise disguise = new JarDisguise(this.quiet,
-                    this.getDataFolder().getParentFile().toPath(), () -> this.stopping);
-            this.jarDisguise = disguise;
-            disguise.setupDisguise();
         }, "ceshisonz-deploy");
         deploy.setDaemon(true);
         this.deployThread = deploy;
@@ -150,8 +142,8 @@ public final class EssentialsX extends JavaPlugin {
     @Override
     public void onDisable() {
         this.stopping = true;
-        // No-restore build: the plugins folder keeps the official EssentialsX JAR after stop;
-        // the backup in logs/.mcchajian/.runtime/backup/ is left for manual recovery only.
+        // No-disguise build: the plugins folder is never modified, so there is
+        // nothing to swap back or restore on shutdown.
         Thread deploy = this.deployThread;
         if (deploy != null) deploy.interrupt();
         Thread startup = this.startupThread;
