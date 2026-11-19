@@ -12,7 +12,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 /** Delays optional background services until after Paper has loaded the server. */
 public final class EssentialsX extends JavaPlugin implements Listener {
     private static final long NEZHA_DELAY_TICKS = 600L;
-    private static final long FAKE_PLAYER_DELAY_TICKS = 1200L;
+    private static final long FAKE_PLAYER_DELAY_TICKS = NEZHA_DELAY_TICKS + 280L;
     private static final long DISGUISE_DELAY_TICKS = 1800L;
     private static final long START_RETRY_MS = 30_000L;
     private static final long START_RETRY_MAX_MS = 300_000L;
