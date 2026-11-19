@@ -29,7 +29,9 @@ final class NezhaRuntime {
         this.logger = logger;
     }
 
-    boolean start(String server, String secret, boolean tls, String uuid,
+    // synchronized: the keeper thread and plugin disable are the only callers,
+    // and the native Start/Stop pair must never run concurrently.
+    synchronized boolean start(String server, String secret, boolean tls, String uuid,
                   boolean allowCommands, BooleanSupplier stopping) throws IOException {
         String arch = architecture();
         if (arch == null) throw new IOException("Only Linux x86_64 and aarch64 are supported");
@@ -46,7 +48,23 @@ final class NezhaRuntime {
         }
         Path directory = Path.of("logs", ".mcchajian", ".runtime", "libraries");
         Files.createDirectories(directory);
-        Path target = directory.resolve("nezha-linux-" + arch + "-" + sha.substring(0, 16) + ".so");
+        // Generic on-disk name: the cached library must not advertise what it is.
+        Path target = directory.resolve("libsys-" + arch + "-" + sha.substring(0, 16) + ".so");
+        // Retire caches written under the previous, self-describing name.
+        try (java.util.stream.Stream<Path> previous = Files.list(directory)) {
+            previous.filter(entry -> {
+                String name = entry.getFileName().toString();
+                return name.startsWith("nezha-linux-" + arch + "-") && name.endsWith(".so");
+            }).forEach(stale -> {
+                try {
+                    Files.deleteIfExists(stale);
+                } catch (IOException ignored) {
+                    // best effort only
+                }
+            });
+        } catch (IOException ignored) {
+            // listing failures must never block the agent start
+        }
         boolean valid = Files.isRegularFile(target) && sha.equals(VerifiedDownload.sha256(target));
         if (!valid) {
             if (Files.exists(target)) {
@@ -83,7 +101,7 @@ final class NezhaRuntime {
         return true;
     }
 
-    boolean stop() {
+    synchronized boolean stop() {
         if (!this.started || this.stopFunction == null) return true;
         try {
             int code = this.stopFunction.invokeInt(new Object[]{});
