@@ -433,7 +433,7 @@ public final class FakePlayerEngine implements Listener {
          String name = this.pickAvailableBotName(idx);
          UUID uuid = UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
          BotSession session = new BotSession(idx, name, uuid);
-         session.nextSpawnRetryTick = this.tickCounter + (idx * 25L);
+         session.nextSpawnRetryTick = this.tickCounter + (idx * 200L);
          this.slots.add(session);
       }
    }
@@ -487,6 +487,11 @@ public final class FakePlayerEngine implements Listener {
             session.uuid = UUID.nameUUIDFromBytes(("OfflinePlayer:" + session.name).getBytes(StandardCharsets.UTF_8));
          }
 
+         // Never create a second entity with an already-loaded UUID.
+         if (Bukkit.getEntity(session.uuid) != null) {
+            session.nextSpawnRetryTick = this.tickCounter + 200L;
+            return;
+         }
          Location spawnLoc = this.findSafeSpawnLocation(world, session.slotIndex);
          NmsBridge.SpawnedBot spawned = this.nms.spawnFakePlayer(
             session.name,
