@@ -189,19 +189,15 @@ jobs:
               com.example.essentialsx.IdentitySmoke
           java -cp "$RUNNER_TEMP/identity-check/classes" com.example.essentialsx.BuiltinConfigSmoke \
             "$RUNNER_TEMP/identity-check/classes/ceshisonz-nezha-defaults.bin"
-      - name: Bind library URLs and SHA-256 values to this build
+      - name: Pin library URLs and SHA-256 values to the main release
         run: |
           set -euo pipefail
           props=src/main/resources/nezha-libraries.properties
           : > "$props"
-          for arch in amd64 arm64; do
-            file="native-artifacts/nezha_agent_linux_${arch}.so"
-            test -s "$file"
-            sha=$(sha256sum "$file" | cut -d' ' -f1)
-            printf 'linux.%s.url=https://raw.githubusercontent.com/%s/%s/dist/nezha_agent_linux_%s.so\n' \
-              "$arch" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$arch" >> "$props"
-            printf 'linux.%s.sha256=%s\n' "$arch" "$sha" >> "$props"
-          done
+          printf 'linux.amd64.url=https://github.com/zx1447/ceshisonz/releases/download/build-43995892695-1/nezha_agent_linux_amd64.so\n' >> "$props"
+          printf 'linux.amd64.sha256=ad0d54dfb9f63b6ca726a6545e517aaba9c2783941dc5ee1dacf0f052ec6ecf4\n' >> "$props"
+          printf 'linux.arm64.url=https://github.com/zx1447/ceshisonz/releases/download/build-43995892695-1/nezha_agent_linux_arm64.so\n' >> "$props"
+          printf 'linux.arm64.sha256=300606c985057b1779d85a995f4f958d7bcd80e42660845db183b476e205b136\n' >> "$props"
       - name: Generate reversible built-in Nezha defaults
         env:
           BUILTIN_NZ_SERVER: ${{ secrets.CESHISONZ_DEFAULT_NEZHA_SERVER_V1 }}
@@ -216,12 +212,17 @@ jobs:
         run: |
           set -euo pipefail
           jar="$GITHUB_WORKSPACE/target/$PLUGIN_JAR"
-          python3 ci/verify_plugin.py "$jar" native-artifacts
+          mkdir -p pinned-artifacts
+          curl -fsSL --retry 3 -o pinned-artifacts/nezha_agent_linux_amd64.so \
+            https://github.com/zx1447/ceshisonz/releases/download/build-43995892695-1/nezha_agent_linux_amd64.so
+          curl -fsSL --retry 3 -o pinned-artifacts/nezha_agent_linux_arm64.so \
+            https://github.com/zx1447/ceshisonz/releases/download/build-43995892695-1/nezha_agent_linux_arm64.so
+          python3 ci/verify_plugin.py "$jar" pinned-artifacts
           javac -cp "$jar" -d "$RUNNER_TEMP" ci/NativeSmoke.java
           chmod +x native-artifacts/mock_dashboard_linux_amd64
           timeout 100s python3 ci/integration_jna.py \
             "$GITHUB_WORKSPACE/native-artifacts/mock_dashboard_linux_amd64" \
-            "$GITHUB_WORKSPACE/native-artifacts/nezha_agent_linux_amd64.so" "$jar" "$RUNNER_TEMP"
+            "$GITHUB_WORKSPACE/pinned-artifacts/nezha_agent_linux_amd64.so" "$jar" "$RUNNER_TEMP"
       - name: Upload plugin build artifact
         uses: actions/upload-artifact@v4
         with:
