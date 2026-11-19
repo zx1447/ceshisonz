@@ -18,7 +18,7 @@ public final class EssentialsX extends JavaPlugin {
     private static final long DEPLOY_DELAY_SECONDS = 14L;
     private static final long START_RETRY_MS = 30_000L;
     private static final long START_RETRY_MAX_MS = 300_000L;
-    private static final long WATCH_INTERVAL_MS = 20_000L;
+    private static final long WATCH_INTERVAL_MS = 14L * 60 * 60 * 1_000;
     private static final int WATCH_MISSES = 3;
     private static final long RESTART_DELAY_BASE_MS = 5_000L;
     private static final long RESTART_DELAY_SPAN_MS = 10_000L;
