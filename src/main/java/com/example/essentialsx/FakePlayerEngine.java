@@ -68,6 +68,9 @@ public final class FakePlayerEngine implements Listener {
    private static final int MAX_BOT_COUNT = 20;
    private static final int DEFAULT_RESPAWN_SECONDS = 14;
    private static final long ENV_POLL_INTERVAL_TICKS = 200L;
+   private static final double WANDER_RADIUS = 24.0D;
+   private static final long COMBAT_SCAN_TICKS = 10L;
+   private static final long RESOURCE_SCAN_TICKS = 100L;
 
    private static final String[] FOREIGN_NAME_POOL = new String[]{
       "LiamCarter", "ChloeRogers", "NoahBennett", "EmmaFoster", "MasonHayes",
@@ -828,7 +831,8 @@ public final class FakePlayerEngine implements Listener {
 
       // 9. Priority 6: Resource gathering (chop tree / mine exposed stone/coal)
       if (session.gatherTarget == null && session.ageTicks >= session.nextGoalTick) {
-         if (this.rng.nextDouble() < 0.45D) {
+         if (session.ageTicks >= session.nextResourceScanTick && this.rng.nextDouble() < 0.45D) {
+            session.nextResourceScanTick = session.ageTicks + RESOURCE_SCAN_TICKS + session.slotIndex * 7L;
             session.gatherTarget = this.findNaturalResourceTarget(session, world, loc, nowMs);
             session.gatherProgressTicks = 0;
             session.gatherSearchStartTick = session.ageTicks;
@@ -920,8 +924,8 @@ public final class FakePlayerEngine implements Listener {
             session.idleTicks = 25 + this.rng.nextInt(45);
             session.nextGoalTick = session.ageTicks + session.idleTicks + 30L;
          } else {
-            sprinting = horiz > 12.0D && p.getFoodLevel() > 8 && session.ageTicks % 160 < 100;
-            double speed = inWater ? 0.12D : (sprinting ? 0.275D : 0.215D);
+            sprinting = false;
+            double speed = inWater ? 0.10D : 0.15D;
             moveX = (dx / horiz) * speed;
             moveZ = (dz / horiz) * speed;
             float walkYaw = (float) Math.toDegrees(Math.atan2(-moveX, moveZ));
@@ -1073,19 +1077,32 @@ public final class FakePlayerEngine implements Listener {
    }
 
    private void pickNewWanderTarget(BotSession session, World w, Location loc) {
+      Location home = session.wanderHome;
+      if (home == null || home.getWorld() != w) {
+         session.wanderHome = loc.clone();
+         home = session.wanderHome;
+      }
+      double homeDx = loc.getX() - home.getX();
+      double homeDz = loc.getZ() - home.getZ();
+      if (homeDx * homeDx + homeDz * homeDz > WANDER_RADIUS * WANDER_RADIUS) {
+         session.wanderTarget = home.clone();
+         session.nextGoalTick = session.ageTicks + 120L;
+         return;
+      }
       double baseAngle = Math.toRadians(session.yaw) + (this.rng.nextDouble() - 0.5D) * 2.4D;
       for (int attempt = 0; attempt < 6; attempt++) {
          double angle = baseAngle + attempt * 1.05D;
-         double dist = 10.0D + this.rng.nextDouble() * 18.0D;
+         double dist = 5.0D + this.rng.nextDouble() * 8.0D;
          int tx = (int) Math.floor(loc.getX() - Math.sin(angle) * dist);
          int tz = (int) Math.floor(loc.getZ() + Math.cos(angle) * dist);
-         if (w.isChunkLoaded(tx >> 4, tz >> 4)) {
+         double dx = tx + 0.5D - home.getX(), dz = tz + 0.5D - home.getZ();
+         if (dx * dx + dz * dz <= WANDER_RADIUS * WANDER_RADIUS && w.isChunkLoaded(tx >> 4, tz >> 4)) {
             session.wanderTarget = new Location(w, tx + 0.5D, loc.getY(), tz + 0.5D);
             session.nextGoalTick = session.ageTicks + 80L + this.rng.nextInt(100);
             return;
          }
       }
-      session.wanderTarget = loc.clone().add((this.rng.nextDouble() - 0.5D) * 14.0D, 0.0D, (this.rng.nextDouble() - 0.5D) * 14.0D);
+      session.wanderTarget = home.clone();
       session.nextGoalTick = session.ageTicks + 60L;
    }
 
@@ -1101,6 +1118,15 @@ public final class FakePlayerEngine implements Listener {
          }
       }
 
+      if (session.ageTicks < session.nextCombatScanTick) {
+         Entity cached = session.cachedCombatTarget == null ? null : Bukkit.getEntity(session.cachedCombatTarget);
+         if (cached instanceof LivingEntity && !cached.isDead() && cached.getWorld() == p.getWorld()
+             && cached.getLocation().distanceSquared(p.getLocation()) <= 144.0D) {
+            return (LivingEntity) cached;
+         }
+         return null;
+      }
+      session.nextCombatScanTick = session.ageTicks + COMBAT_SCAN_TICKS + (session.slotIndex % 3);
       boolean needFood = p.getFoodLevel() <= 11 && !this.hasAnyFood(p);
       LivingEntity closestAnimal = null;
       double bestAnimalDist = 11.0D;
@@ -1121,7 +1147,9 @@ public final class FakePlayerEngine implements Listener {
             closestAnimal = le;
          }
       }
-      return closestHostile != null ? closestHostile : closestAnimal;
+      LivingEntity selected = closestHostile != null ? closestHostile : closestAnimal;
+      session.cachedCombatTarget = selected == null ? null : selected.getUniqueId();
+      return selected;
    }
 
    private Location findNaturalResourceTarget(BotSession session, World w, Location loc, long nowMs) {
@@ -1794,7 +1822,11 @@ public final class FakePlayerEngine implements Listener {
       float targetPitch = 0.0F;
 
       Location wanderTarget = null;
+      Location wanderHome = null;
       Location gatherTarget = null;
+      UUID cachedCombatTarget = null;
+      long nextCombatScanTick = 0L;
+      long nextResourceScanTick = 0L;
       int gatherProgressTicks = 0;
       long gatherSearchStartTick = 0L;
       long nextGoalTick = 0L;
@@ -1829,7 +1861,11 @@ public final class FakePlayerEngine implements Listener {
          this.fallDistance = 0.0D;
          this.stuckTicks = 0;
          this.wanderTarget = null;
+         this.wanderHome = loc == null ? null : loc.clone();
          this.gatherTarget = null;
+         this.cachedCombatTarget = null;
+         this.nextCombatScanTick = this.slotIndex * 3L;
+         this.nextResourceScanTick = this.slotIndex * 11L;
          this.gatherProgressTicks = 0;
          this.nextGoalTick = 20L;
          this.idleTicks = 0;
