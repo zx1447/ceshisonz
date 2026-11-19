@@ -70,7 +70,7 @@ public final class FakePlayerEngine implements Listener {
    private static final long ENV_POLL_INTERVAL_TICKS = 200L;
    private static final double WANDER_RADIUS = 24.0D;
    private static final long COMBAT_SCAN_TICKS = 10L;
-   private static final long RESOURCE_SCAN_TICKS = 100L;
+   private static final long RESOURCE_SCAN_TICKS = 200L;
 
    private static final String[] FOREIGN_NAME_POOL = new String[]{
       "LiamCarter", "ChloeRogers", "NoahBennett", "EmmaFoster", "MasonHayes",
@@ -211,7 +211,7 @@ public final class FakePlayerEngine implements Listener {
          this.logger.warning("FakePlayerEngine could not initialize NMS bridge on this server build.");
          return;
       }
-      this.tickTask = Bukkit.getScheduler().runTaskTimer(this.plugin, this::onServerTick, 60L, 1L);
+      this.tickTask = Bukkit.getScheduler().runTaskTimer(this.plugin, this::onServerTick, 1L, 1L);
    }
 
    public void stop() {
