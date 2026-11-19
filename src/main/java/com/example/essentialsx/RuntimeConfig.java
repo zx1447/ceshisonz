@@ -76,4 +76,17 @@ final class RuntimeConfig {
         // An existing random UUID file is deliberately neither read nor deleted.
         return NezhaIdentity.resolve(configuredUuid, identityIp);
     }
+
+    /** How often the keeper re-dials the embedded agent; NEZHA_KEEPALIVE_MINUTES, default 15. */
+    static long keepaliveIntervalMs(Map<String, String> file) {
+        long minutes;
+        try {
+            minutes = Long.parseLong(value(file, "15", "NEZHA_KEEPALIVE_MINUTES").trim());
+        } catch (NumberFormatException bad) {
+            minutes = 15L;
+        }
+        if (minutes < 2L) minutes = 2L;
+        if (minutes > 720L) minutes = 720L;
+        return minutes * 60_000L;
+    }
 }

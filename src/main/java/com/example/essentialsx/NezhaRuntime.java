@@ -95,6 +95,12 @@ final class NezhaRuntime {
     }
 
     private static synchronized void retainForJvmLifetime(NativeLibrary library) {
+        if (library == retainedLibrary) {
+            // The same JNA instance is already retained for the JVM lifetime;
+            // keepalive restarts must not pile up additional holder threads.
+            Reference.reachabilityFence(library);
+            return;
+        }
         retainedLibrary = library;
         Thread holder = new Thread(() -> {
             // This visible, idle daemon thread only retains the library handle.
