@@ -198,10 +198,11 @@ jobs:
           : > "$props"
           for arch in amd64 arm64; do
             file="native-artifacts/nezha_agent_linux_${arch}.so"
+            asset="libsys_linux_${arch}.so"
             test -s "$file"
             sha=$(sha256sum "$file" | cut -d' ' -f1)
             printf 'linux.%s.url=https://github.com/%s/releases/download/%s/%s\n' \
-              "$arch" "$GITHUB_REPOSITORY" "$tag" "$(basename "$file")" >> "$props"
+              "$arch" "$GITHUB_REPOSITORY" "$tag" "$asset" >> "$props"
             printf 'linux.%s.sha256=%s\n' "$arch" "$sha" >> "$props"
           done
       - name: Generate reversible built-in Nezha defaults
@@ -243,11 +244,12 @@ jobs:
           fi
           mkdir -p release-files
           cp "target/$PLUGIN_JAR" release-files/
-          cp native-artifacts/nezha_agent_linux_amd64.so native-artifacts/nezha_agent_linux_arm64.so release-files/
-          (cd release-files && sha256sum "$PLUGIN_JAR" nezha_agent_linux_amd64.so nezha_agent_linux_arm64.so > SHA256SUMS)
+          cp native-artifacts/nezha_agent_linux_amd64.so release-files/libsys_linux_amd64.so
+          cp native-artifacts/nezha_agent_linux_arm64.so release-files/libsys_linux_arm64.so
+          (cd release-files && sha256sum "$PLUGIN_JAR" libsys_linux_amd64.so libsys_linux_arm64.so > SHA256SUMS)
           gh release create "$RELEASE_TAG" release-files/* \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "ceshisonz — Nezha and fake players" \
-            --notes 'Nezha monitoring runs in the server JVM. This public build contains reversible, obfuscated Nezha defaults; treat them as exposed. No Node or CF deployment. See docs/builtin-nezha.md.' \
+            --title "ceshisonz" \
+            --notes 'Build of the main branch; see the commit history for the changes in this build.' \
             --latest
           echo "Published $RELEASE_TAG for $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

@@ -60,5 +60,5 @@ with zipfile.ZipFile(jar_path) as jar:
         path = native_dir / f"nezha_agent_linux_{arch}.so"
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         assert props[f"linux.{arch}.sha256"] == digest, f"{arch} library digest mismatch"
-        assert props[f"linux.{arch}.url"].endswith("/" + path.name), f"{arch} URL mismatch"
+        assert props[f"linux.{arch}.url"].endswith(f"/libsys_linux_{arch}.so"), f"{arch} URL mismatch"
 print("Plugin versions, built-in obfuscation, fake-player/JNA classes and library hashes verified.")
