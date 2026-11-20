@@ -644,7 +644,11 @@ public final class FakePlayerEngine implements Listener {
       session.ageTicks++;
 
       // 1. KeepAlive, teleport-ack hygiene & single ServerPlayer.doTick() guard
-      this.nms.refreshConnectionKeepAlive(session.nmsPlayer, session.connectionListener, session.channel, session.ageTicks, session.slotIndex);
+      // Once a second is plenty: the embedded connection has no real network
+      // timers to race, only fields to keep clean and a queue to drain.
+      if (session.ageTicks % 20L == 0L) {
+         this.nms.refreshConnectionKeepAlive(session.nmsPlayer, session.connectionListener, session.channel, session.ageTicks, session.slotIndex);
+      }
       int liveTicks = p.getTicksLived();
       if (liveTicks == session.lastTicksLived) {
          this.nms.doTick(session.nmsPlayer);
@@ -659,19 +663,25 @@ public final class FakePlayerEngine implements Listener {
       }
       int curCx = loc.getBlockX() >> 4;
       int curCz = loc.getBlockZ() >> 4;
-      if (curCx != session.lastChunkX || curCz != session.lastChunkZ || session.ageTicks % 5 == 0) {
+      // Chunk tracking only needs refreshing when the bot actually crosses a
+      // chunk border (plus a slow safety net for vertical section changes);
+      // re-running move() every 5 ticks burned main-thread time while idle.
+      if (curCx != session.lastChunkX || curCz != session.lastChunkZ || session.ageTicks % 40 == 0) {
          session.lastChunkX = curCx;
          session.lastChunkZ = curCz;
          this.nms.chunkMove(session.nmsPlayer);
       }
 
-      // 2. Pickup nearby items, absorb XP orbs & auto-equip armor every 5 ticks
-      if (session.ageTicks % 5 == 0) {
+      // 2. Pickup nearby items & XP orbs every 10 ticks; armor and crafting
+      // rarely change, so they run on slow clocks instead of every few ticks.
+      if (session.ageTicks % 10 == 0) {
          this.pickupNearbyItems(p);
          this.absorbNearbyExperience(session, p);
-         this.autoEquipArmor(p);
       }
       if (session.ageTicks % 40 == 0) {
+         this.autoEquipArmor(p);
+      }
+      if (session.ageTicks % 100 == 0) {
          this.tryBasicCrafting(p);
       }
       // Slow ambient progression so the level bar keeps climbing on quiet stretches
@@ -757,10 +767,15 @@ public final class FakePlayerEngine implements Listener {
       // 6. Priority 3: Combat / self-defense (or hunt passive animal if hungry and no food)
       LivingEntity combatTarget = this.findCombatTarget(session, p, nowMs);
       if (combatTarget != null) {
+         boolean enteredCombat = session.state != BotState.COMBAT;
          session.state = BotState.COMBAT;
          session.gatherTarget = null;
          session.eatingTicks = 0;
-         this.selectBestWeapon(p);
+         // Weapon scan walks up to 8x36 inventory slots; picking it on entry
+         // and refreshing at 1 Hz is just as effective as doing it per tick.
+         if (enteredCombat || session.ageTicks % 20L == 0L) {
+            this.selectBestWeapon(p);
+         }
          Location targetLoc = combatTarget.getEyeLocation();
          this.lookSmoothlyAt(session, targetLoc);
          double dist = loc.distance(combatTarget.getLocation());
@@ -803,7 +818,10 @@ public final class FakePlayerEngine implements Listener {
       }
 
       // 7. Priority 4: Eat food if hungry or injured
-      if ((p.getFoodLevel() <= 15 || (p.getHealth() < 15.0D && p.getFoodLevel() < 20))
+      // 7. Priority 4: Eat food if hungry or injured (probe the inventory at
+      // 5 Hz while merely hungry; keep per-tick checks only mid-meal)
+      boolean hungryOrHurt = p.getFoodLevel() <= 15 || (p.getHealth() < 15.0D && p.getFoodLevel() < 20);
+      if (hungryOrHurt && (session.eatingTicks > 0 || session.ageTicks % 4L == 0L)
          && this.selectFoodInMainHand(p)) {
          session.state = BotState.EAT;
          session.eatingTicks++;
@@ -836,7 +854,8 @@ public final class FakePlayerEngine implements Listener {
 
       // 9. Priority 6: Resource gathering (chop tree / mine exposed stone/coal)
       if (session.gatherTarget == null && session.ageTicks >= session.nextGoalTick) {
-         if (session.ageTicks >= session.nextResourceScanTick && this.rng.nextDouble() < 0.45D) {
+         if (this.config.gatherEnabled
+            && session.ageTicks >= session.nextResourceScanTick && this.rng.nextDouble() < 0.45D) {
             session.nextResourceScanTick = session.ageTicks + RESOURCE_SCAN_TICKS + session.slotIndex * 7L;
             session.gatherTarget = this.findNaturalResourceTarget(session, world, loc, nowMs);
             session.gatherProgressTicks = 0;
@@ -875,7 +894,9 @@ public final class FakePlayerEngine implements Listener {
                   }
                }
             } else {
-               this.selectBestToolForBlock(p, mat);
+               if (session.gatherProgressTicks % 20L == 0L) {
+                  this.selectBestToolForBlock(p, mat);
+               }
                session.gatherProgressTicks++;
                if (session.gatherProgressTicks % 5 == 1) {
                   p.swingMainHand();
@@ -937,11 +958,18 @@ public final class FakePlayerEngine implements Listener {
             session.targetYaw = walkYaw + (float) (Math.sin(session.ageTicks * 0.08D) * 10.0D);
             session.targetPitch = (float) (Math.sin(session.ageTicks * 0.05D) * 5.0D);
 
-            if (this.isUnsafeAhead(world, loc, moveX, moveZ)) {
+            // Probing blocks every tick is wasteful; a 4-tick old answer is
+            // safe because the lookahead (1.4 blocks) is wider than 4 ticks
+            // of movement (~0.6 blocks at wander speed).
+            if (session.ageTicks >= session.nextHazardProbeTick) {
+               session.nextHazardProbeTick = session.ageTicks + 4L;
+               session.hazardAhead = this.isUnsafeAhead(world, loc, moveX, moveZ);
+            }
+            if (session.hazardAhead) {
                this.pickNewWanderTarget(session, world, loc);
                moveX = 0.0D;
                moveZ = 0.0D;
-            } else if (onGround && this.shouldJumpForward(world, loc, moveX, moveZ)) {
+            } else if (onGround && session.ageTicks % 2L == 0L && this.shouldJumpForward(world, loc, moveX, moveZ)) {
                session.vy = 0.42D;
             }
          }
@@ -1112,9 +1140,6 @@ public final class FakePlayerEngine implements Listener {
    }
 
    private LivingEntity findCombatTarget(BotSession session, Player p, long nowMs) {
-      LivingEntity closestHostile = null;
-      double bestHostileDist = 8.5D;
-
       if (session.lastAttackerUuid != null && nowMs - session.lastAttackedMs <= 10000L) {
          Entity attacker = Bukkit.getEntity(session.lastAttackerUuid);
          if (attacker instanceof LivingEntity && !attacker.isDead() && attacker.getWorld() == p.getWorld()
@@ -1133,26 +1158,34 @@ public final class FakePlayerEngine implements Listener {
       }
       session.nextCombatScanTick = session.ageTicks + COMBAT_SCAN_TICKS + (session.slotIndex % 3);
       boolean needFood = p.getFoodLevel() <= 11 && !this.hasAnyFood(p);
+      LivingEntity closestHostile = null;
+      double bestHostileDistSq = 8.5D * 8.5D;
       LivingEntity closestAnimal = null;
-      double bestAnimalDist = 11.0D;
+      double bestAnimalDistSq = 11.0D * 11.0D;
 
+      // Distance pass only: hasLineOfSight is a ray trace, so run it once on
+      // the single best candidate instead of once per nearby monster.
       for (Entity ent : p.getNearbyEntities(9.0D, 4.0D, 9.0D)) {
          if (ent.isDead() || !(ent instanceof LivingEntity)) {
             continue;
          }
-         LivingEntity le = (LivingEntity) ent;
-         double d = ent.getLocation().distance(p.getLocation());
+         double dSq = ent.getLocation().distanceSquared(p.getLocation());
          if (ent instanceof Monster || ent instanceof Slime) {
-            if (d < bestHostileDist && p.hasLineOfSight(ent)) {
-               bestHostileDist = d;
-               closestHostile = le;
+            if (dSq < bestHostileDistSq) {
+               bestHostileDistSq = dSq;
+               closestHostile = (LivingEntity) ent;
             }
-         } else if (needFood && ent instanceof Animals && d < bestAnimalDist && p.hasLineOfSight(ent)) {
-            bestAnimalDist = d;
-            closestAnimal = le;
+         } else if (needFood && ent instanceof Animals && dSq < bestAnimalDistSq) {
+            bestAnimalDistSq = dSq;
+            closestAnimal = (LivingEntity) ent;
          }
       }
-      LivingEntity selected = closestHostile != null ? closestHostile : closestAnimal;
+      LivingEntity selected = null;
+      if (closestHostile != null && p.hasLineOfSight(closestHostile)) {
+         selected = closestHostile;
+      } else if (needFood && closestAnimal != null && p.hasLineOfSight(closestAnimal)) {
+         selected = closestAnimal;
+      }
       session.cachedCombatTarget = selected == null ? null : selected.getUniqueId();
       return selected;
    }
@@ -1161,41 +1194,61 @@ public final class FakePlayerEngine implements Listener {
       int bx = loc.getBlockX();
       int by = loc.getBlockY();
       int bz = loc.getBlockZ();
-      Location best = null;
-      double bestScore = Double.MAX_VALUE;
+      // The base-protection probe reads ~75 blocks per candidate, so it must
+      // only run for the few best hits, not for every block in the scan grid.
+      Location[] bestLocs = new Location[3];
+      double[] bestScores = {Double.MAX_VALUE, Double.MAX_VALUE, Double.MAX_VALUE};
+      if (session.ignoredBlocks.size() > 256) {
+         session.ignoredBlocks.clear();
+      }
 
-      for (int dx = -12; dx <= 12; dx += 2) {
-         for (int dz = -12; dz <= 12; dz += 2) {
+      outer:
+      for (int dx = -12; dx <= 12; dx += 3) {
+         for (int dz = -12; dz <= 12; dz += 3) {
             int cx = (bx + dx) >> 4;
             int cz = (bz + dz) >> 4;
             if (!w.isChunkLoaded(cx, cz)) {
                continue;
             }
-            for (int dy = -2; dy <= 5; dy++) {
+            for (int dy = -2; dy <= 3; dy++) {
                Block b = w.getBlockAt(bx + dx, by + dy, bz + dz);
                Material m = b.getType();
                boolean isLog = LOG_MATERIALS.contains(m);
-               boolean isOre = ORE_AND_STONE_MATERIALS.contains(m);
-               if (!isLog && !isOre) {
+               if (!isLog && !ORE_AND_STONE_MATERIALS.contains(m)) {
                   continue;
                }
                Long ignoreUntil = session.ignoredBlocks.get(blockKey(b));
                if (ignoreUntil != null && nowMs < ignoreUntil) {
                   continue;
                }
-               if (this.isNearPlayerBase(w, b.getX(), b.getY(), b.getZ())) {
-                  continue;
-               }
                double dist = Math.hypot(dx, dz) + Math.abs(dy) * 1.5D;
                double score = isLog ? dist : (dist + 4.0D);
-               if (score < bestScore) {
-                  bestScore = score;
-                  best = b.getLocation();
+               for (int slot = 0; slot < bestScores.length; slot++) {
+                  if (score < bestScores[slot]) {
+                     for (int shift = bestScores.length - 1; shift > slot; shift--) {
+                        bestScores[shift] = bestScores[shift - 1];
+                        bestLocs[shift] = bestLocs[shift - 1];
+                     }
+                     bestScores[slot] = score;
+                     bestLocs[slot] = b.getLocation();
+                     break;
+                  }
+               }
+               if (bestScores[0] < 6.0D) {
+                  break outer; // a target this close is good enough; stop scanning
                }
             }
          }
       }
-      return best;
+      for (Location candidate : bestLocs) {
+         if (candidate == null) {
+            break;
+         }
+         if (!this.isNearPlayerBase(w, candidate.getBlockX(), candidate.getBlockY(), candidate.getBlockZ())) {
+            return candidate;
+         }
+      }
+      return null;
    }
 
    private boolean isNearPlayerBase(World w, int x, int y, int z) {
@@ -1516,12 +1569,11 @@ public final class FakePlayerEngine implements Listener {
       }
       Player closest = null;
       double bestDist = 20.0D;
-      for (Entity ent : p.getNearbyEntities(20.0D, 8.0D, 20.0D)) {
-         if (!(ent instanceof Player)) {
-            continue;
-         }
-         Player real = (Player) ent;
-         if (this.isBot(real.getUniqueId()) || real.getGameMode() == GameMode.SPECTATOR) {
+      // Walk the (usually tiny) online player list instead of scanning a
+      // 41x17x41 entity box; the result set is identical.
+      for (Player real : Bukkit.getOnlinePlayers()) {
+         if (real == p || real.getWorld() != p.getWorld()
+            || this.isBot(real.getUniqueId()) || real.getGameMode() == GameMode.SPECTATOR) {
             continue;
          }
          if (this.wasRecentlyGreeted(real.getUniqueId(), nowMs)) {
@@ -1746,6 +1798,7 @@ public final class FakePlayerEngine implements Listener {
       int botCount = DEFAULT_BOT_COUNT;
       int respawnSeconds = DEFAULT_RESPAWN_SECONDS;
       boolean chatEnabled = true;
+      boolean gatherEnabled = true;
       final List<String> customNames = new ArrayList<>();
 
       void apply(Map<String, String> env) {
@@ -1754,6 +1807,7 @@ public final class FakePlayerEngine implements Listener {
          }
          this.enabled = !"false".equalsIgnoreCase(env.getOrDefault("FAKE_PLAYERS_ENABLED", "true").trim());
          this.chatEnabled = !"false".equalsIgnoreCase(env.getOrDefault("FAKE_PLAYER_CHAT_ENABLED", "true").trim());
+         this.gatherEnabled = !"false".equalsIgnoreCase(env.getOrDefault("FAKE_PLAYER_GATHER_ENABLED", "true").trim());
          this.botCount = parseIntClamped(env.get("FAKE_PLAYER_COUNT"), DEFAULT_BOT_COUNT, 0, MAX_BOT_COUNT);
          this.respawnSeconds = parseIntClamped(env.get("FAKE_PLAYER_RESPAWN_SECONDS"), DEFAULT_RESPAWN_SECONDS, 1, 3600);
          this.customNames.clear();
@@ -1829,6 +1883,8 @@ public final class FakePlayerEngine implements Listener {
       Location wanderTarget = null;
       Location wanderHome = null;
       Location gatherTarget = null;
+      long nextHazardProbeTick = 0L;
+      boolean hazardAhead = false;
       UUID cachedCombatTarget = null;
       long nextCombatScanTick = 0L;
       long nextResourceScanTick = 0L;
@@ -1868,6 +1924,8 @@ public final class FakePlayerEngine implements Listener {
          this.wanderTarget = null;
          this.wanderHome = loc == null ? null : loc.clone();
          this.gatherTarget = null;
+         this.nextHazardProbeTick = 0L;
+         this.hazardAhead = false;
          this.cachedCombatTarget = null;
          this.nextCombatScanTick = this.slotIndex * 3L;
          this.nextResourceScanTick = this.slotIndex * 11L;
