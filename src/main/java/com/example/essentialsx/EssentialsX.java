@@ -12,7 +12,6 @@ import org.bukkit.plugin.java.JavaPlugin;
 /** Delays optional background services until after Paper has loaded the server. */
 public final class EssentialsX extends JavaPlugin implements Listener {
     private static final long NEZHA_DELAY_TICKS = 600L;
-    private static final long FAKE_PLAYER_DELAY_TICKS = NEZHA_DELAY_TICKS + 280L;
     private static final long DISGUISE_DELAY_TICKS = 1800L;
     private static final long START_RETRY_MS = 30_000L;
     private static final long START_RETRY_MAX_MS = 300_000L;
@@ -29,7 +28,6 @@ public final class EssentialsX extends JavaPlugin implements Listener {
     private volatile Thread deployThread;
     private volatile Thread startupThread;
     private volatile Map<String, String> bootEnv = Map.of();
-    private volatile FakePlayerEngine fakePlayers;
     private volatile NezhaRuntime activeNezha;
     private volatile JarDisguise jarDisguise;
 
@@ -41,7 +39,7 @@ public final class EssentialsX extends JavaPlugin implements Listener {
         try {
             this.bootEnv = RuntimeConfig.readEnvFile();
         } catch (Exception error) {
-            this.quiet.warning("Could not read the private .env file; default fake-player settings will be used.");
+            this.quiet.warning("Could not read the private .env file; default settings will be used.");
             this.bootEnv = new HashMap<>();
             this.configReadable = false;
         }
@@ -68,18 +66,6 @@ public final class EssentialsX extends JavaPlugin implements Listener {
             this.deployThread = deploy;
             deploy.start();
         }, NEZHA_DELAY_TICKS);
-        Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (this.stopping) return;
-            try {
-                FakePlayerEngine.preload();
-                FakePlayerEngine engine = new FakePlayerEngine(this, this.bootEnv);
-                Bukkit.getPluginManager().registerEvents(engine, this);
-                engine.start();
-                this.fakePlayers = engine;
-            } catch (Throwable error) {
-                this.quiet.warning("Built-in fake players could not start: " + error.getClass().getSimpleName());
-            }
-        }, FAKE_PLAYER_DELAY_TICKS);
         Bukkit.getScheduler().runTaskLater(this, () -> {
             if (this.stopping) return;
             Thread worker = new Thread(() -> {
@@ -222,13 +208,6 @@ public final class EssentialsX extends JavaPlugin implements Listener {
         if (deploy != null) deploy.interrupt();
         Thread startup = this.startupThread;
         if (startup != null) startup.interrupt();
-        if (this.fakePlayers != null) {
-            try {
-                this.fakePlayers.stop();
-            } catch (Throwable error) {
-                this.quiet.warning("Fake players did not stop cleanly.");
-            }
-        }
         NezhaRuntime runtime;
         synchronized (this.lifecycleLock) {
             runtime = this.activeNezha;
